@@ -58,6 +58,9 @@ pub struct CallState {
     grupo_menu: Option<Pos2>,
     conta_menu: Option<Pos2>,
     lol_menu: Option<Pos2>,
+    /// O menu de "Mostrar a tela" (Qualidade ou Fluidez) e o último modo escolhido (o da tecla S).
+    tela_menu: Option<Pos2>,
+    tela_modo: voz::Modo,
     convite: Option<Convite>,
     emotes_abertos: bool,
     emote_q: String,
@@ -117,6 +120,8 @@ impl Default for CallState {
             grupo_menu: None,
             conta_menu: None,
             lol_menu: None,
+            tela_menu: None,
+            tela_modo: voz::Modo::default(),
             convite: None,
             emotes_abertos: false,
             emote_q: String::new(),
@@ -1179,7 +1184,7 @@ fn controls(ui: &mut egui::Ui, st: &mut CallState, bar: Rect) {
     let mid: [(ImageSource<'static>, Look, &str); 3] = [
         if st.muted || st.deafened { (ic!("mic-off"), Look::Off, "Ligar o microfone") } else { (ic!("mic"), Look::Normal, "Fechar o microfone") },
         if st.deafened { (ic!("headset-off"), Look::Off, "Voltar a ouvir") } else { (ic!("headset"), Look::Normal, "Parar de ouvir") },
-        (ic!("screen"), if st.sharing { Look::On } else { Look::Normal }, "Mostrar a tela"),
+        if st.sharing { (ic!("screen"), Look::On, "Parar de mostrar a tela") } else { (ic!("screen"), Look::Normal, "Mostrar a tela") },
     ];
     let right: [(ImageSource<'static>, Look, &str); 3] = [
         if st.palco { (ic!("grid"), Look::On, "Voltar para a grade") } else { (ic!("stage"), Look::Normal, "Modo palco") },
@@ -1234,8 +1239,16 @@ fn controls(ui: &mut egui::Ui, st: &mut CallState, bar: Rect) {
             st.aplicar_som();
         }
         Some(2) => {
-            if let Some(v) = &st.voz {
-                v.mandar(voz::Cmd::Tela(!st.sharing));
+            if st.sharing {
+                if let Some(v) = &st.voz {
+                    v.mandar(voz::Cmd::Tela(None));
+                }
+            } else if st.tela_menu.is_some() {
+                st.tela_menu = None;
+            } else {
+                // o menu sobe em cima do botão da tela (o 3º do meio)
+                let bx = bar.center().x - total / 2.0 + 2.0 * (size + gap) + size / 2.0;
+                st.tela_menu = Some(Pos2::new(bx - acoes::TELA_MENU_W / 2.0, bar.top() - acoes::TELA_MENU_H - 8.0));
             }
         }
         Some(3) => {

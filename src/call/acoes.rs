@@ -86,6 +86,10 @@ fn menu(ui: &egui::Ui, id: &str, at: Pos2, w: f32, itens: &[(ImageSource<'static
     (out.inner, fora)
 }
 
+/// O menu de "Mostrar a tela": largura e altura (o título e duas linhas), para a barra saber onde pôr.
+pub(super) const TELA_MENU_W: f32 = 230.0;
+pub(super) const TELA_MENU_H: f32 = 8.0 + 28.0 + 2.0 * 36.0 + 8.0;
+
 /// O cartão de uma pessoa (`.dz-card`): foto, nome, @, cargos, o estado e "Ver perfil".
 pub(super) fn cartao(ui: &egui::Ui, st: &mut CallState, body: Rect) {
     let Some((id, at)) = st.card else { return };
@@ -214,6 +218,20 @@ pub(super) fn menus(ui: &egui::Ui, st: &mut CallState, t: f64) {
         }
         if esc.is_some() || fora {
             st.grupo_menu = None;
+        }
+    }
+    if let Some(at) = st.tela_menu {
+        let itens = [(ic!("sparkle"), "Qualidade · 1080p", false), (ic!("bolt"), "Fluidez · 60 fps", false)];
+        let (esc, fora) = menu(ui, "tela", at, TELA_MENU_W, &itens, Some("Mostrar a tela"));
+        if let Some(i) = esc {
+            st.tela_modo = if i == 0 { voz::Modo::Qualidade } else { voz::Modo::Fluidez };
+            if let Some(v) = &st.voz {
+                v.mandar(voz::Cmd::Tela(Some(st.tela_modo)));
+            }
+        }
+        // o clique no próprio botão da tela já fecha o menu pela barra
+        if esc.is_some() || (fora && !ui.input(|i| i.pointer.interact_pos()).is_some_and(|q| q.y > at.y + TELA_MENU_H)) {
+            st.tela_menu = None;
         }
     }
     if let Some(at) = st.conta_menu {
@@ -485,7 +503,7 @@ pub(super) fn atalhos(ui: &egui::Ui, st: &mut CallState) {
         }
         if i.key_pressed(Key::S) {
             if let Some(v) = &st.voz {
-                v.mandar(voz::Cmd::Tela(!st.sharing));
+                v.mandar(voz::Cmd::Tela(if st.sharing { None } else { Some(st.tela_modo) }));
             }
         }
         if i.key_pressed(Key::I) {

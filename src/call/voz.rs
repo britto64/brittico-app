@@ -5,7 +5,7 @@
 //!
 //! Tudo roda num runtime do tokio numa thread própria; a tela manda `Cmd` e lê o `Estado`.
 
-use livekit::options::{TrackPublishOptions, VideoCodec};
+use livekit::options::{DegradationPreference, TrackPublishOptions, VideoCodec, VideoEncoding};
 use livekit::prelude::*;
 use livekit::webrtc::audio_frame::AudioFrame;
 use livekit::webrtc::audio_source::native::NativeAudioSource;
@@ -49,10 +49,48 @@ pub struct Estado {
     pub aviso: Option<String>,
 }
 
+/// Como a tela sai: `Qualidade` segura a imagem em 1080p com bitrate alto e deixa os quadros caírem quando a rede ou o
+/// computador não dão conta; `Fluidez` segura os 60 quadros por segundo e, se faltar, baixa o bitrate e a resolução.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Modo {
+    Qualidade,
+    /// O padrão, como no site.
+    #[default]
+    Fluidez,
+}
+
+impl Modo {
+    /// Quadros por segundo pedidos ao capturador e ao codificador.
+    fn fps(self) -> f64 {
+        match self {
+            Modo::Qualidade => 30.0,
+            Modo::Fluidez => 60.0,
+        }
+    }
+    /// O teto de bitrate (bits por segundo).
+    fn bitrate(self) -> u64 {
+        match self {
+            // 8 Mbps é o teto do plano do servidor (o mesmo do site, `voice-presets.js`)
+            Modo::Qualidade => 8_000_000,
+            Modo::Fluidez => 8_000_000,
+        }
+    }
+    fn degradar(self) -> DegradationPreference {
+        match self {
+            Modo::Qualidade => DegradationPreference::MaintainResolution,
+            Modo::Fluidez => DegradationPreference::MaintainFramerate,
+        }
+    }
+}
+
+/// A altura máxima da tela que sai: maior que isso (um monitor 1440p ou 4K) é reduzido para 1080p.
+const ALTURA_MAX: u32 = 1080;
+
 pub enum Cmd {
     Mic(bool),
     Surdo(bool),
-    Tela(bool),
+    /// Mostrar a tela no modo dado, ou parar (`None`).
+    Tela(Option<Modo>),
     Volume(i64, f32),
     Sair,
 }
@@ -184,7 +222,8 @@ async fn rodar(token_path: String, entrada: Option<(String, String)>, mic: Strin
 
     let mut tela: Option<(LocalVideoTrack, std::sync::mpsc::SyncSender<()>)> = None;
     if std::env::var("BRITTICO_VOZ_TELA").is_ok() {
-        match mostrar_tela(&room).await {
+        let modo = if std::env::var("BRITTICO_VOZ_TELA").is_ok_and(|v| v == "fluidez") { Modo::Fluidez } else { Modo::Qualidade };
+        match mostrar_tela(&room, modo).await {
             Ok(t) => { tela = Some(t); mudar(&|s| s.tela = true); }
             Err(e) => eprintln!("[voz] tela: {e}"),
         }
@@ -217,8 +256,8 @@ async fn rodar(token_path: String, entrada: Option<(String, String)>, mic: Strin
                                     let mut n = 0u64;
                                     let mut ultimo = std::time::Instant::now() - std::time::Duration::from_secs(1);
                                     while let Some(f) = fluxo.next().await {
-                                        // até 30 quadros por segundo na tela (o que passar disso é trabalho jogado fora)
-                                        if ultimo.elapsed() < std::time::Duration::from_millis(30) { continue; }
+                                        // até ~60 quadros por segundo na tela (a tela de quem escolheu "Fluidez")
+                                        if ultimo.elapsed() < std::time::Duration::from_millis(15) { continue; }
                                         ultimo = std::time::Instant::now();
                                         let (w, h) = (f.buffer.width() as usize, f.buffer.height() as usize);
                                         if w == 0 || h == 0 { continue; }
@@ -264,20 +303,20 @@ async fn rodar(token_path: String, entrada: Option<(String, String)>, mic: Strin
                     Some(Cmd::Mic(aberto)) => if aberto { faixa.unmute() } else { faixa.mute() },
                     Some(Cmd::Surdo(s)) => if let Ok(mut m) = mistura.lock() { m.surdo = s },
                     Some(Cmd::Volume(id, v)) => if let Ok(mut m) = mistura.lock() { m.alvo(&id.to_string(), v); m.alvo(&format!("{id}:tela"), v) },
-                    Some(Cmd::Tela(true)) if tela.is_none() => {
-                        match mostrar_tela(&room).await {
+                    Some(Cmd::Tela(Some(modo))) if tela.is_none() => {
+                        match mostrar_tela(&room, modo).await {
                             Ok(t) => { tela = Some(t); mudar(&|s| s.tela = true); }
                             Err(e) => mudar(&|s| { s.tela = false; s.aviso = Some(e.clone()); }),
                         }
                     }
-                    Some(Cmd::Tela(false)) => {
+                    Some(Cmd::Tela(None)) => {
                         if let Some((faixa_tela, parar)) = tela.take() {
                             drop(parar);
                             let _ = room.local_participant().unpublish_track(&faixa_tela.sid()).await;
                         }
                         mudar(&|s| s.tela = false);
                     }
-                    Some(Cmd::Tela(true)) => {}
+                    Some(Cmd::Tela(Some(_))) => {}
                     Some(Cmd::Sair) | None => break,
                 }
             }
@@ -297,8 +336,9 @@ async fn rodar(token_path: String, entrada: Option<(String, String)>, mic: Strin
 }
 
 /// Mostra a tela: o capturador do libwebrtc (no Windows a tela inteira; no Linux com Wayland o seletor do sistema)
-/// manda quadros BGRA, que viram I420 e saem por uma faixa de vídeo `Screenshare`.
-async fn mostrar_tela(room: &Room) -> Result<(LocalVideoTrack, std::sync::mpsc::SyncSender<()>), String> {
+/// manda quadros BGRA, que viram I420 (no máximo 1080p) e saem por uma faixa de vídeo `Screenshare` no ritmo, no bitrate
+/// e com a preferência do `modo`.
+async fn mostrar_tela(room: &Room, modo: Modo) -> Result<(LocalVideoTrack, std::sync::mpsc::SyncSender<()>), String> {
     use livekit::webrtc::desktop_capturer::{DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions};
     #[cfg(target_os = "linux")]
     let tipo = if std::env::var("WAYLAND_DISPLAY").is_ok() { DesktopCaptureSourceType::Generic } else { DesktopCaptureSourceType::Screen };
@@ -310,7 +350,8 @@ async fn mostrar_tela(room: &Room) -> Result<(LocalVideoTrack, std::sync::mpsc::
     let faixa = LocalVideoTrack::create_video_track("tela", RtcVideoSource::Native(fonte.clone()));
     let (parar_tx, parar_rx) = std::sync::mpsc::sync_channel::<()>(0);
     let (pronto_tx, pronto_rx) = std::sync::mpsc::sync_channel::<Result<(), String>>(1);
-    // o capturador não pode mudar de thread: vive numa só, pedindo um quadro a cada 1/15 s até a faixa sair
+    // o capturador não pode mudar de thread: vive numa só, pedindo um quadro a cada 1/fps até a faixa sair
+    let intervalo = std::time::Duration::from_secs_f64(1.0 / modo.fps());
     std::thread::Builder::new()
         .name("call-tela".into())
         .spawn(move || {
@@ -329,12 +370,23 @@ async fn mostrar_tela(room: &Room) -> Result<(LocalVideoTrack, std::sync::mpsc::
                 let (sy, su, sv) = buf.strides();
                 let (dy, du, dv) = buf.data_mut();
                 livekit::webrtc::native::yuv_helper::argb_to_i420(q.data(), q.stride(), dy, sy, du, su, dv, sv, w as i32, h as i32);
+                if h > ALTURA_MAX {
+                    let nw = ((w as u64 * ALTURA_MAX as u64 / h as u64) as i32) & !1;
+                    buf = buf.scale(nw, ALTURA_MAX as i32);
+                }
                 let quadro = VideoFrame { rotation: VideoRotation::VideoRotation0, timestamp_us: 0, frame_metadata: None, buffer: buf };
                 fonte.capture_frame(&quadro);
             });
             let _ = pronto_tx.send(Ok(()));
+            // o relógio marca a hora de cada quadro; se um atrasar, o próximo não tenta compensar em rajada
+            let mut proximo = std::time::Instant::now();
             loop {
-                match parar_rx.recv_timeout(std::time::Duration::from_millis(66)) {
+                proximo += intervalo;
+                let agora = std::time::Instant::now();
+                if proximo < agora {
+                    proximo = agora;
+                }
+                match parar_rx.recv_timeout(proximo - agora) {
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => cap.capture_frame(),
                     _ => break,
                 }
@@ -346,7 +398,14 @@ async fn mostrar_tela(room: &Room) -> Result<(LocalVideoTrack, std::sync::mpsc::
         Ok(Err(e)) => return Err(e),
         Err(_) => return Err("A captura da tela não começou.".into()),
     }
-    let publicar = TrackPublishOptions { source: TrackSource::Screenshare, video_codec: VideoCodec::VP8, simulcast: false, ..Default::default() };
+    let publicar = TrackPublishOptions {
+        source: TrackSource::Screenshare,
+        video_codec: VideoCodec::VP8,
+        simulcast: false,
+        video_encoding: Some(VideoEncoding { max_bitrate: modo.bitrate(), max_framerate: modo.fps() }),
+        degradation_preference: Some(modo.degradar()),
+        ..Default::default()
+    };
     room.local_participant().publish_track(LocalTrack::Video(faixa.clone()), publicar).await.map_err(|e| format!("Não consegui mostrar a tela ({e})."))?;
     Ok((faixa, parar_tx))
 }
