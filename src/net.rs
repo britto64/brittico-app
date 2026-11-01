@@ -106,7 +106,9 @@ fn agente() -> &'static ureq::Agent {
     A.get_or_init(|| {
         ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(20)))
-            .tls_config(ureq::tls::TlsConfig::builder().provider(ureq::tls::TlsProvider::NativeTls).build())
+            // os certificados do sistema: com a lista própria do ureq (o padrão), o Windows monta a cadeia até uma raiz dele
+            // que não está na lista e a conexão cai com "unable to find any user-specified roots in the final cert chain"
+            .tls_config(ureq::tls::TlsConfig::builder().provider(ureq::tls::TlsProvider::NativeTls).root_certs(ureq::tls::RootCerts::PlatformVerifier).build())
             .http_status_as_error(false)
             .user_agent(concat!("BritticoApp/", env!("CARGO_PKG_VERSION")))
             .build()
