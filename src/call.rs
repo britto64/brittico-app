@@ -490,8 +490,7 @@ impl CallState {
     }
 }
 
-pub fn show(ui: &mut egui::Ui, st: &mut CallState, body: Rect, t: f64, geracao: u64) {
-    st.passo(ui.ctx(), geracao, t);
+pub fn show(ui: &mut egui::Ui, st: &mut CallState, body: Rect, t: f64, _geracao: u64) {
     if let Some(ch) = st.pedir_entrar.take() {
         st.entrar_com(ui.ctx(), ch, None);
     }
@@ -586,12 +585,12 @@ fn channels_col(ui: &mut egui::Ui, st: &mut CallState, col: Rect, t: f64) {
     let head = col_head(ui, col);
     let name = dados::grupos().get(st.group).map(|g| g.name.clone()).unwrap_or_default();
     let name = name.as_str();
-    let title = text(&p, Pos2::new(head.left() + 20.0, head.center().y), Align2::LEFT_CENTER, name, patua(15.0), INK(), -0.1);
+    let title = crate::nome::desenhar(ui, Pos2::new(head.left() + 20.0, head.center().y), Align2::LEFT_CENTER, name, patua(15.0), INK(), -0.1, 0.0);
     let alvo = Rect::from_min_max(Pos2::new(head.left() + 12.0, head.top() + 14.0), Pos2::new(title.right() + 26.0, head.bottom() - 14.0));
     let gr = ui.interact(alvo, ui.id().with("grupo-nome"), Sense::click()).on_hover_cursor(CursorIcon::PointingHand).on_hover_text("Opções da sala");
     if gr.hovered() || st.grupo_menu.is_some() {
         p.rect_filled(alvo, R_SM(), CREAM_2());
-        text(&p, Pos2::new(head.left() + 20.0, head.center().y), Align2::LEFT_CENTER, name, patua(15.0), INK(), -0.1);
+        crate::nome::desenhar(ui, Pos2::new(head.left() + 20.0, head.center().y), Align2::LEFT_CENTER, name, patua(15.0), INK(), -0.1, 0.0);
     }
     ui::icon(ui, ic!("chevron-down"), Pos2::new(title.right() + 15.0, head.center().y), 15.0, FAINT());
     let gear = head_act(ui, Pos2::new(head.right() - 34.0, head.center().y), ic!("gear"), "Opções da sala");
@@ -616,7 +615,8 @@ fn channels_col(ui: &mut egui::Ui, st: &mut CallState, col: Rect, t: f64) {
             let fechada = st.fechadas.contains(&cat);
             let c = if resp.hovered() { SOFT() } else { FAINT() };
             ui::icon(ui, if fechada { ic!("chevron-right") } else { ic!("chevron-down") }, Pos2::new(r.left() + 12.0 + 8.0 + 5.0, r.top() + 18.0), 10.0, c);
-            text(p, Pos2::new(r.left() + 12.0 + 24.0, r.top() + 19.0), Align2::LEFT_CENTER, &cat_name.to_uppercase(), f8(10.0), c, 0.8);
+            let _ = p;
+            crate::nome::desenhar(ui, Pos2::new(r.left() + 12.0 + 24.0, r.top() + 19.0), Align2::LEFT_CENTER, &cat_name.to_uppercase(), f8(10.0), c, 0.8, 0.0);
             if resp.clicked() {
                 if fechada {
                     st.fechadas.remove(&cat);
@@ -696,7 +696,7 @@ fn channels_col(ui: &mut egui::Ui, st: &mut CallState, col: Rect, t: f64) {
             Some(voz::Conexao::Entrando) => format!("{} · conectando…", dados::canal_ou(room).name),
             _ => dados::canal_ou(room).name,
         };
-        text(&p, Pos2::new(dock.left() + 36.0, dock.center().y + 8.0), Align2::LEFT_CENTER, &estado, f6(11.5), SOFT(), 0.0);
+        crate::nome::desenhar(ui, Pos2::new(dock.left() + 36.0, dock.center().y + 8.0), Align2::LEFT_CENTER, &estado, f6(11.5), SOFT(), 0.0, dock.width() - 36.0 - 50.0);
         let hang = Rect::from_center_size(Pos2::new(dock.right() - 25.0, dock.center().y), Vec2::splat(34.0));
         let r = ui.interact(hang, ui.id().with("dock-sair"), Sense::click()).on_hover_cursor(CursorIcon::PointingHand).on_hover_text("Sair da call");
         if r.hovered() {
@@ -751,7 +751,8 @@ fn ch_row(ui: &mut egui::Ui, icon: ImageSource<'static>, name: &str, active: boo
     let ic_color = if active || live { SECONDARY() } else { FAINT() };
     let name_color = if active { SECONDARY() } else if resp.hovered() { INK() } else { SOFT() };
     ui::icon(ui, icon, Pos2::new(r.left() + 16.0, r.center().y), 15.0, ic_color);
-    text(p, Pos2::new(r.left() + 33.0, r.center().y), Align2::LEFT_CENTER, name, f7(13.0), name_color, -0.1);
+    let _ = p;
+    crate::nome::desenhar(ui, Pos2::new(r.left() + 33.0, r.center().y), Align2::LEFT_CENTER, name, f7(13.0), name_color, -0.1, r.width() - 33.0 - 52.0);
     extra(ui, r);
     resp
 }
@@ -793,7 +794,7 @@ fn vp_row(ui: &mut egui::Ui, st: &CallState, id: usize, t: f64) -> Option<Pos2> 
 fn main_head(ui: &egui::Ui, main: Rect, icon: ImageSource<'static>, name: &str) -> (Rect, Rect) {
     let head = col_head(ui, main);
     ui::icon(ui, icon, Pos2::new(head.left() + 29.0, head.center().y), 18.0, SECONDARY());
-    let title = text(ui.painter(), Pos2::new(head.left() + 48.0, head.center().y), Align2::LEFT_CENTER, name, patua(15.0), INK(), -0.1);
+    let title = crate::nome::desenhar(ui, Pos2::new(head.left() + 48.0, head.center().y), Align2::LEFT_CENTER, name, patua(15.0), INK(), -0.1, 0.0);
     (head, title)
 }
 
@@ -871,7 +872,7 @@ fn chat(ui: &mut egui::Ui, st: &mut CallState, main: Rect, ch: usize) {
     }
     ui::icon(ui, ic!("send"), send.center(), 18.0, SECONDARY());
     let field = Rect::from_min_max(Pos2::new(bx.left() + 41.0, bx.top() + 4.0), Pos2::new(bx.right() - 44.0, bx.bottom() - 4.0));
-    let hint = egui::RichText::new(if channel.can_post { format!("Conversar em #{}", channel.name) } else { "Este canal é somente leitura.".to_owned() }).color(FAINT()).font(f6(13.5));
+    let hint = egui::RichText::new(if channel.can_post { format!("Conversar em #{}", crate::nome::simples(&channel.name)) } else { "Este canal é somente leitura.".to_owned() }).color(FAINT()).font(f6(13.5));
     let out = ui.put(field, egui::TextEdit::singleline(&mut st.draft).id(ui.id().with("composer")).frame(false).hint_text(hint).font(f6(13.5)).text_color(INK()).vertical_align(egui::Align::Center).margin(egui::Margin::ZERO));
     acoes::seletor_emotes(ui, st, composer);
     // "digitando…" para os outros, no máximo a cada 3 s
@@ -900,7 +901,7 @@ fn chat(ui: &mut egui::Ui, st: &mut CallState, main: Rect, ch: usize) {
 fn chat_start(ui: &mut egui::Ui, name: &str) {
     let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 90.0), Sense::hover());
     let p = ui.painter();
-    text(p, Pos2::new(r.left() + 24.0, r.top() + 40.0), Align2::LEFT_CENTER, &format!("Bem-vindo a #{name}"), patua(20.0), INK(), 0.0);
+    crate::nome::desenhar(ui, Pos2::new(r.left() + 24.0, r.top() + 40.0), Align2::LEFT_CENTER, &format!("Bem-vindo a #{name}"), patua(20.0), INK(), 0.0, 0.0);
     text(p, Pos2::new(r.left() + 24.0, r.top() + 66.0), Align2::LEFT_CENTER, "Este é o começo do canal.", f6(13.0), SOFT(), 0.0);
 }
 
@@ -950,7 +951,7 @@ fn voice_door(ui: &mut egui::Ui, st: &mut CallState, main: Rect, ch: usize) {
     let sq = Rect::from_center_size(c - Vec2::new(0.0, 94.0), Vec2::splat(72.0));
     p.rect_filled(sq, R_LG(), SECONDARY());
     ui::icon(ui, ic!("speaker"), sq.center(), 34.0, Color32::WHITE);
-    text(&p, c - Vec2::new(0.0, 28.0), Align2::CENTER_CENTER, &channel.name, patua(22.0), INK(), 0.0);
+    crate::nome::desenhar(ui, c - Vec2::new(0.0, 28.0), Align2::CENTER_CENTER, &channel.name, patua(22.0), INK(), 0.0, 0.0);
     let sub = match channel.kind {
         Kind::Voice { cap: Some(cap), .. } => format!("{} PESSOAS NA CALL · LIMITE DE {}", members.len(), cap),
         _ if members.is_empty() => "NINGUÉM NA CALL AINDA".to_string(),
@@ -1408,7 +1409,7 @@ fn person_row(ui: &mut egui::Ui, st: &CallState, id: usize, role: Option<&Role>,
     }
     if let Some(room) = room {
         ui::icon(ui, ic!("speaker"), Pos2::new(r.left() + 54.0 + 5.0, r.center().y + 9.0), 10.0, FAINT());
-        text(p, Pos2::new(r.left() + 54.0 + 14.0, r.center().y + 9.0), Align2::LEFT_CENTER, &dados::canal_ou(room).name, f6(10.5), FAINT(), 0.0);
+        crate::nome::desenhar(ui, Pos2::new(r.left() + 54.0 + 14.0, r.center().y + 9.0), Align2::LEFT_CENTER, &dados::canal_ou(room).name, f6(10.5), FAINT(), 0.0, r.width() - 54.0 - 14.0 - 8.0);
     }
     resp.clicked().then(|| r.left_top())
 }

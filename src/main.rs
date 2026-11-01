@@ -21,6 +21,7 @@ mod livepixel;
 mod dados;
 
 mod net;
+mod nome;
 mod olheiro;
 mod perfil;
 mod shell;
@@ -352,6 +353,8 @@ impl eframe::App for App {
         self.conta.passo(ctx);
         let t_agora = ctx.input(|i| i.time);
         self.perfil.passo_prefs(ctx, self.conta.geracao, t_agora);
+        // a Call vive fora da tela dela: os servidores da trilha, a voz e os avisos chegam em qualquer seção
+        self.call.passo(ctx, self.conta.geracao, t_agora);
         egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::CREAM_1())).show(ctx, |ui| {
             let full = ui.max_rect();
             let t = ctx.input(|i| i.time);

@@ -125,7 +125,7 @@ fn resultados(q: &str) -> Vec<(&'static str, Vec<(String, String, Destino)>)> {
     let grupos_call = crate::dados::grupos();
     let canais: Vec<_> = crate::dados::canais().iter().enumerate().filter(|(_, c)| c.grupo < grupos_call.len() && tem(&c.name)).take(4).map(|(i, c)| {
         let tipo = match c.kind { crate::dados::Kind::Voice { .. } => "canal de voz", crate::dados::Kind::News => "avisos", _ => "canal de texto" };
-        (c.name.to_owned(), format!("{tipo} · {}", grupos_call[c.grupo].name), Destino::Canal(i))
+        (crate::nome::simples(&c.name), format!("{tipo} · {}", crate::nome::simples(&grupos_call[c.grupo].name)), Destino::Canal(i))
     }).collect();
     if !canais.is_empty() {
         grupos.push(("Canais da Call", canais));
@@ -364,22 +364,29 @@ pub fn rail(ui: &mut egui::Ui, app: &mut App, full: Rect) {
         }
         let r = next(&mut y);
         let on = app.section == Section::Call && app.call.group == i;
-        let name = g.name.clone();
+        let name = crate::nome::simples(&g.name);
         if button(ui, r, &format!("grupo-{}", g.id), &name, on, |ui, r, hot| {
             plate(ui, r, hot);
-            let emoji = match g.icon.as_str() {
-                "🌐" => Some(png!("emoji/globo")),
-                "🛡️" | "🛡" => Some(png!("emoji/escudo")),
-                _ => None,
-            };
-            if let Some(src) = emoji {
-                ui::image(ui, src, Rect::from_center_size(r.center(), Vec2::splat(22.0)), 0.0);
-            } else if let Some(src) = g.icon.starts_with("http").then(|| crate::net::imagem(&g.icon)).flatten() {
+            // o `roomIcon` do site: foto (endereço ou caminho da API), emoji curto, ou as iniciais sem os códigos de posição
+            let icone = g.icon.trim();
+            let foto = (icone.starts_with("http") || icone.starts_with('/')).then(|| crate::net::imagem(icone)).flatten();
+            let emoji = (!icone.is_empty() && foto.is_none() && icone.chars().count() <= 8)
+                .then(|| crate::nome::partes(icone).into_iter().find_map(|p| if let crate::nome::Parte::Emoji(c) = p { Some(c) } else { None }))
+                .flatten();
+            let cor = if hot { ON_SECONDARY() } else { SOFT() };
+            if let Some(src) = foto {
                 ui::image(ui, src, r.shrink(4.0), R_MD());
+            } else if let Some(c) = emoji {
+                ui::image(ui, crate::nome::emoji(&c), Rect::from_center_size(r.center(), Vec2::splat(24.0)), 0.0);
             } else {
-                let ini: String = g.name.split_whitespace().filter_map(|w| w.chars().next()).take(2).collect::<String>().to_uppercase();
-                let ini = if ini.chars().count() < 2 { g.name.chars().take(2).collect::<String>().to_uppercase() } else { ini };
-                text(ui.painter(), r.center() + Vec2::new(0.0, 1.0), Align2::CENTER_CENTER, &ini, patua(15.0), if hot { ON_SECONDARY() } else { SOFT() }, 0.0);
+                let letras = crate::nome::sem_icones(&g.name);
+                match (letras.is_empty(), crate::nome::primeira_pos(&g.name)) {
+                    (true, Some(p)) => crate::nome::icone_pos(ui, p, r.center(), 20.0, cor),
+                    _ => {
+                        let base = if letras.is_empty() { g.name.clone() } else { letras };
+                        text(ui.painter(), r.center() + Vec2::new(0.0, 1.0), Align2::CENTER_CENTER, &ui::initials(&base), patua(15.0), cor, 0.0);
+                    }
+                }
             }
         }) {
             app.section = Section::Call;

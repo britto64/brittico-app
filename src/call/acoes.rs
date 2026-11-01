@@ -47,7 +47,8 @@ pub(super) fn linha(ui: &egui::Ui, x: f32, y: f32, line: &str) {
             }
             cx = r.right();
         } else {
-            cx = text(p, Pos2::new(cx, y), Align2::LEFT_CENTER, word, f6(13.5), INK(), 0.0).right();
+            // emoji e código de posição viram imagem, como nos nomes
+            cx = crate::nome::desenhar(ui, Pos2::new(cx, y), Align2::LEFT_CENTER, word, f6(13.5), INK(), 0.0, 0.0).right();
         }
     }
 }
@@ -137,7 +138,7 @@ pub(super) fn cartao(ui: &egui::Ui, st: &mut CallState, body: Rect) {
             None if person.online => "Online".into(),
             None => "Offline".into(),
         };
-        text(p, Pos2::new(x, y + 15.0), Align2::LEFT_CENTER, &estado, f6(12.5), SOFT(), 0.0);
+        crate::nome::desenhar(ui, Pos2::new(x, y + 15.0), Align2::LEFT_CENTER, &estado, f6(12.5), SOFT(), 0.0, w - 32.0);
         y += 30.0;
         p.rect_filled(Rect::from_min_size(Pos2::new(x, y + 5.0), Vec2::new(w - 32.0, 1.0)), 0.0, HAIRLINE_2());
         y += 12.0;
