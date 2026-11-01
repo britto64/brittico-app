@@ -1,5 +1,7 @@
 //! Atualização do app, no jeito do Discord: ao abrir e depois de 6 em 6 horas pergunta ao GitHub qual é o último
-//! lançamento; se for mais novo, o topo mostra "Atualizar para X". O clique baixa o arquivo certo para o jeito como o
+//! lançamento; se for mais novo, o topo mostra "Atualizar para X", e o clique abre a página de download do site
+//! (brittico.xyz/app/). A troca sozinha abaixo está DESLIGADA (sem assinatura digital o Windows bloqueia o instalador;
+//! ver `Tipo::sozinho`). Quando ligada, o clique baixa o arquivo certo para o jeito como o
 //! app foi instalado, confere o SHA-256 com o `SHA256SUMS.txt` do lançamento e troca:
 //!
 //! - Windows instalado (há um `unins000.exe` ao lado): roda o instalador novo em silêncio (`/VERYSILENT`), que fecha
@@ -39,8 +41,9 @@ fn url_arquivo(tag: &str, nome: &str) -> String {
     }
 }
 
+/// A página de download do site, para onde o aviso leva.
 pub fn pagina() -> String {
-    format!("https://github.com/{REPO}/releases/latest")
+    "https://brittico.xyz/app/".to_owned()
 }
 
 /// Como este app está instalado (decide o que baixar e como trocar).
@@ -76,9 +79,12 @@ impl Tipo {
             Tipo::Outro => None,
         }
     }
-    /// Dá para trocar sozinho (senão o botão só abre a página).
+    /// Dá para trocar sozinho (senão o botão só abre a página). Desligado em 2026-11-01, a pedido dele: sem assinatura
+    /// digital, o Windows bloqueia o instalador que o app baixa e roda ("não foi possível confirmar quem assinou").
+    /// O aviso leva à página de download do site. A troca sozinha continua aqui para quando houver assinatura
+    /// (`BRITTICO_ATUALIZAR_SOZINHO=1` liga, para testes).
     pub fn sozinho(&self) -> bool {
-        self.arquivo().is_some()
+        self.arquivo().is_some() && std::env::var("BRITTICO_ATUALIZAR_SOZINHO").is_ok_and(|v| v == "1")
     }
 }
 

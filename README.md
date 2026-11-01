@@ -43,8 +43,8 @@ Todos os arquivos estão na [última versão](https://github.com/britto64/britti
 | [**Brittico-Setup-x64.exe**](https://github.com/britto64/brittico-app/releases/latest/download/Brittico-Setup-x64.exe) | Quase todo mundo. Instala em segundos, sem pedir administrador, e pergunta se cria o atalho e se o Brittico abre junto com o Windows. |
 | [Brittico-portable-x64.exe](https://github.com/britto64/brittico-app/releases/latest/download/Brittico-portable-x64.exe) | Quem não quer instalar: é só abrir. |
 
-Windows 10 ou 11, 64 bits. Da 1.0.1 em diante o Brittico avisa no topo quando sai uma versão nova e se atualiza
-sozinho com um clique (no instalado, no portátil e no AppImage); na 1.0.0, rode o instalador novo por cima. Para remover, use
+Windows 10 ou 11, 64 bits. O Brittico avisa no topo quando sai uma versão nova; o aviso abre a página de download,
+e é só rodar o instalador novo por cima. Para remover, use
 *Configurações → Aplicativos*.
 
 > [!NOTE]

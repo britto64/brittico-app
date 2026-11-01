@@ -470,7 +470,7 @@ fn atualizacao(ui: &mut egui::Ui, app: &mut App, direita: Pos2) {
     let (rotulo, icone, progresso, dica): (String, egui::ImageSource<'static>, Option<f32>, Option<String>) = match &app.atualizador.fase {
         Fase::Nada => return,
         Fase::Disponivel(tag) if app.atualizador.tipo.sozinho() => (format!("Atualizar para {}", v(tag)), ic!("download"), None, None),
-        Fase::Disponivel(tag) => (format!("Versão {} disponível", v(tag)), ic!("download"), None, None),
+        Fase::Disponivel(tag) => (format!("Atualizar para {}", v(tag)), ic!("download"), None, None),
         Fase::Baixando { tag, feito, total } => {
             let (f, t) = (feito.load(Ordering::Relaxed), total.load(Ordering::Relaxed));
             let pct = (t > 0).then(|| (f as f32 / t as f32).clamp(0.0, 1.0));
