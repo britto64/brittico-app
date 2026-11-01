@@ -326,8 +326,7 @@ fn voz(ui: &mut egui::Ui, st: &mut ConfigState, x: f32, top: f32, w: f32, t: f64
 
     p.rect_filled(Rect::from_min_size(Pos2::new(cx, y - 6.0), Vec2::new(cw, 1.0)), 0.0, HAIRLINE_2());
     ajustes::hint(&p, cx, y + 6.0, cw, "A voz sai já limpa: o app tira ruído, eco e acerta o volume sozinho, sem nada para ajustar.", FAINT());
-    ajustes::hint(&p, cx, y + 30.0, cw, "Câmera: ainda não existe no app (a tela você compartilha pelo botão da Call).", FAINT());
-    if ajustes::button(ui, Rect::from_min_size(Pos2::new(cx, y + 62.0), Vec2::new(ajustes::btn_w(&p, "Reler aparelhos"), 36.0)), "reler", "Reler aparelhos", Btn::Contorno).clicked() {
+    if ajustes::button(ui, Rect::from_min_size(Pos2::new(cx, y + 38.0), Vec2::new(ajustes::btn_w(&p, "Reler aparelhos"), 36.0)), "reler", "Reler aparelhos", Btn::Contorno).clicked() {
         st.teste = None;
         st.ler_aparelhos();
     }

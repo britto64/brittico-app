@@ -1176,14 +1176,12 @@ fn controls(ui: &mut egui::Ui, st: &mut CallState, bar: Rect) {
         Off,
         Hang,
     }
-    let mid: [(ImageSource<'static>, Look, &str); 4] = [
+    let mid: [(ImageSource<'static>, Look, &str); 3] = [
         if st.muted || st.deafened { (ic!("mic-off"), Look::Off, "Ligar o microfone") } else { (ic!("mic"), Look::Normal, "Fechar o microfone") },
         if st.deafened { (ic!("headset-off"), Look::Off, "Voltar a ouvir") } else { (ic!("headset"), Look::Normal, "Parar de ouvir") },
-        if st.cam { (ic!("video"), Look::On, "Desligar a câmera") } else { (ic!("video-off"), Look::Off, "Ligar a câmera") },
         (ic!("screen"), if st.sharing { Look::On } else { Look::Normal }, "Mostrar a tela"),
     ];
-    let right: [(ImageSource<'static>, Look, &str); 4] = [
-        (ic!("lol"), if st.lol_menu.is_some() { Look::On } else { Look::Normal }, "Ferramentas de LoL"),
+    let right: [(ImageSource<'static>, Look, &str); 3] = [
         if st.palco { (ic!("grid"), Look::On, "Voltar para a grade") } else { (ic!("stage"), Look::Normal, "Modo palco") },
         if st.cheia { (ic!("compress"), Look::On, "Sair da tela cheia (Esc)") } else { (ic!("expand"), Look::Normal, "Tela cheia da call") },
         (ic!("hangup"), Look::Hang, "Sair da call"),
@@ -1210,7 +1208,7 @@ fn controls(ui: &mut egui::Ui, st: &mut CallState, bar: Rect) {
             clicked = Some(k);
         }
     };
-    let total = size * 4.0 + gap * 3.0;
+    let total = size * 3.0 + gap * 2.0;
     let mut x = bar.center().x - total / 2.0;
     for (k, b) in mid.into_iter().enumerate() {
         draw(ui, k, x, b);
@@ -1218,7 +1216,7 @@ fn controls(ui: &mut egui::Ui, st: &mut CallState, bar: Rect) {
     }
     let mut x = bar.right() - 20.0 - total;
     for (k, b) in right.into_iter().enumerate() {
-        draw(ui, 4 + k, x, b);
+        draw(ui, 3 + k, x, b);
         x += size + gap;
     }
     match clicked {
@@ -1235,19 +1233,17 @@ fn controls(ui: &mut egui::Ui, st: &mut CallState, bar: Rect) {
             st.deafened = !st.deafened;
             st.aplicar_som();
         }
-        Some(2) => st.toast.say("A câmera ainda não chegou ao app: dá para ver a dos outros e mostrar a tela.", ui.input(|i| i.time)),
-        Some(3) => {
+        Some(2) => {
             if let Some(v) = &st.voz {
                 v.mandar(voz::Cmd::Tela(!st.sharing));
             }
         }
-        Some(4) => st.lol_menu = if st.lol_menu.is_some() { None } else { Some(Pos2::new(bar.right() - 20.0 - (42.0 * 4.0 + 30.0) - 60.0, bar.top() - 8.0 - 168.0)) },
-        Some(5) => {
+        Some(3) => {
             st.palco = !st.palco;
             st.foco = None;
         }
-        Some(6) => st.cheia = !st.cheia,
-        Some(7) => st.sair_da_voz(),
+        Some(4) => st.cheia = !st.cheia,
+        Some(5) => st.sair_da_voz(),
         _ => {}
     }
 }

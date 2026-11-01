@@ -228,27 +228,6 @@ pub(super) fn menus(ui: &egui::Ui, st: &mut CallState, t: f64) {
             st.conta_menu = None;
         }
     }
-    if let Some(at) = st.lol_menu {
-        let itens = [
-            (ic!("map"), "Mapa do Rift", false),
-            (ic!("users"), "Elenco", false),
-            (ic!("lol"), "Proximidade do LoL", false),
-            (ic!("bookmark"), "Estratégias salvas", false),
-        ];
-        let (esc, fora) = menu(ui, "lol", at, 250.0, &itens, Some("Ferramentas de LoL"));
-        match esc {
-            Some(2) => st.abrir_proximidade = true,
-            Some(_) => {
-                // o Mapa do Rift, o Elenco e as estratégias são telas da Call do site
-                net::abrir_no_navegador(&format!("{}/call/", net::SITE));
-                st.toast.say("As ferramentas de LoL da call abrem no site, no navegador.", t);
-            }
-            None => {}
-        }
-        if esc.is_some() || fora {
-            st.lol_menu = None;
-        }
-    }
 }
 
 /// A janela de convite: o link para chamar gente, ou o campo para entrar numa sala com o código de alguém.
@@ -485,7 +464,7 @@ pub(super) fn presidencial(ui: &egui::Ui, st: &mut CallState, col: Rect, t: f64)
     h
 }
 
-/// Os atalhos de dentro da call (os mesmos do site): M microfone, D ouvir, V câmera, S tela, I estatísticas, Esc volta.
+/// Os atalhos de dentro da call (os mesmos do site): M microfone, D ouvir, S tela, I estatísticas, Esc volta.
 pub(super) fn atalhos(ui: &egui::Ui, st: &mut CallState) {
     if st.joined.is_none() || ui.ctx().wants_keyboard_input() {
         return;
