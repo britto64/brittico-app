@@ -98,8 +98,9 @@ cd brittico-app
 cargo run --release
 ```
 
-Precisa do Rust estável. No Linux, também dos pacotes de desenvolvimento da GLib, da ALSA e do OpenSSL
-(no Ubuntu: `libglib2.0-dev libasound2-dev libssl-dev pkg-config`). O `.exe` também pode ser gerado a
+Precisa do Rust estável. No Linux, também do **clang 21 ou mais novo** (a voz exige: `CC=clang CXX=clang++`) e
+dos pacotes de desenvolvimento da GLib, da ALSA e do OpenSSL (no Ubuntu: `libglib2.0-dev libasound2-dev
+libssl-dev pkg-config`, e o clang em [apt.llvm.org](https://apt.llvm.org)). O `.exe` também pode ser gerado a
 partir do Linux com o [`build-windows.sh`](build-windows.sh).
 
 As versões publicadas saem do [GitHub Actions](.github/workflows/build.yml): cada tag `v*` compila no

@@ -88,6 +88,11 @@ jobs:
           sudo apt-get install -y --no-install-recommends pkg-config libssl-dev libasound2-dev libglib2.0-dev \
             libx11-dev libxext-dev libxfixes-dev libxdamage-dev libxrandr-dev libxcomposite-dev \
             libdrm-dev libgbm-dev libva-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev rpm file
+          # a libwebrtc (a voz) vem compilada com a libc++ do Chromium e o build.rs dela exige clang 21 ou mais novo
+          # (o GCC ignora o trivial_abi e quebra unique_ptr/shared_ptr); o Ubuntu 22.04 só tem o 14.
+          wget -q https://apt.llvm.org/llvm.sh && sudo bash llvm.sh 21
+          echo "CC=clang-21" >> "$GITHUB_ENV"
+          echo "CXX=clang++-21" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
