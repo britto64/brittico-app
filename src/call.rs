@@ -94,6 +94,14 @@ pub struct CallState {
     tarefas: Vec<net::Tarefa<String>>,
     /// As texturas do vídeo que chega: (pessoa, tela?) → textura e o número do último quadro subido.
     videos: HashMap<(i64, bool), (egui::TextureHandle, u64, Vec2)>,
+    /// A pausa leve: a tela selecionada (perfil) e quando começou. Enquanto dura (no máximo 1 s), a imagem não é
+    /// atualizada (fica a última boa) e uma animação de carregando aparece por cima.
+    pausa: Option<(i64, f64)>,
+    /// Quando foi a última pausa (uma a cada 5 minutos, para não ficar pausando toda hora).
+    ultima_pausa: f64,
+    /// As telas que vêm em tempo real agora (perfil) e quando chegou o último quadro novo de cada uma.
+    tempo_real: Vec<i64>,
+    ultimo_quadro: HashMap<i64, f64>,
     /// Os aparelhos escolhidos nas Configurações (nome; vazio = o padrão do sistema).
     pub auto_entrou: bool,
     pub auto_presi: bool,
@@ -147,6 +155,10 @@ impl Default for CallState {
             pedidas: HashSet::new(),
             tarefas: Vec::new(),
             videos: HashMap::new(),
+            pausa: None,
+            ultima_pausa: f64::NEG_INFINITY,
+            tempo_real: Vec::new(),
+            ultimo_quadro: HashMap::new(),
             mic_nome: String::new(),
             saida_nome: String::new(),
             digitou: 0.0,
@@ -275,8 +287,15 @@ impl CallState {
             let telas: Vec<i64> = self.videos.keys().filter(|(id, tela)| *tela && *id != eu).map(|(id, _)| *id).collect();
             // com uma tela só para assistir não há o que escolher: ela vem em tempo real (a regra vale a partir de duas)
             let unica = telas.len() <= 1;
+            self.tempo_real.clear();
             for id in telas {
-                v.pedir_qualidade((id, true), unica || sel.contains(&id));
+                let tr = unica || sel.contains(&id);
+                // teste da pausa leve: BRITTICO_TESTE_QUEDA força a miniatura entre os segundos 12 e 15 do app
+                let queda = std::env::var("BRITTICO_TESTE_QUEDA").is_ok() && (12.0..15.0).contains(&t);
+                v.pedir_qualidade((id, true), tr && !queda);
+                if tr {
+                    self.tempo_real.push(id);
+                }
             }
         }
         // a voz caiu ou não entrou: avisa e solta
@@ -316,7 +335,20 @@ impl CallState {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         self.sharing = self.voz.as_ref().is_some_and(|v| v.estado.lock().is_ok_and(|e| e.tela));
-        self.subir_videos(ctx);
+        self.subir_videos(ctx, t);
+        // a pausa leve também começa quando a tela em tempo real para de chegar (meio segundo sem quadro novo)
+        if self.pausa.is_none() && t - self.ultima_pausa >= PAUSA_INTERVALO {
+            if let Some(&id) = self.tempo_real.iter().find(|id| self.ultimo_quadro.get(id).is_some_and(|q| t - q > 0.5 && t - q < 5.0)) {
+                self.pausa = Some((id, t));
+                self.ultima_pausa = t;
+            }
+        }
+        if let Some((_, ini)) = self.pausa {
+            if t - ini >= PAUSA_MAX {
+                self.pausa = None;
+            }
+            ctx.request_repaint_after(std::time::Duration::from_millis(33));
+        }
     }
 
     fn abrir_primeiro_canal(&mut self) {
@@ -340,7 +372,7 @@ impl CallState {
     }
 
     /// Sobe para textura o vídeo que chegou desde o último quadro.
-    fn subir_videos(&mut self, ctx: &egui::Context) {
+    fn subir_videos(&mut self, ctx: &egui::Context, t: f64) {
         let Some(v) = &self.voz else {
             self.videos.clear();
             return;
@@ -350,6 +382,26 @@ impl CallState {
         for (k, q) in &e.videos {
             if self.videos.get(k).is_some_and(|(_, n, _)| *n == q.n) {
                 continue;
+            }
+            // a tela em tempo real caiu de repente para a miniatura (144p): começa a pausa leve, que segura a última
+            // imagem boa até a qualidade voltar ou 1 s passar
+            let era_boa = self.videos.get(k).is_some_and(|(_, _, size)| size.y > 150.0);
+            if k.1 && self.tempo_real.contains(&k.0) {
+                self.ultimo_quadro.insert(k.0, t);
+                if q.h <= 150 && era_boa && self.pausa.is_none() && t - self.ultima_pausa >= PAUSA_INTERVALO {
+                    self.pausa = Some((k.0, t));
+                    self.ultima_pausa = t;
+                }
+            }
+            if let Some((id, ini)) = self.pausa {
+                if k.1 && id == k.0 {
+                    if q.h > 150 || t - ini >= PAUSA_MAX {
+                        // voltou a imagem boa (ou passou 1 s): segue normal
+                        self.pausa = None;
+                    } else {
+                        continue;
+                    }
+                }
             }
             let img = egui::ColorImage::from_rgba_unmultiplied([q.w, q.h], &q.rgba);
             match self.videos.get_mut(k) {
@@ -1180,6 +1232,19 @@ fn draw_tile(ui: &egui::Ui, st: &CallState, r: Rect, tile: Tile, t: f64) {
     } else {
         ui::avatar(ui, &person.name, person.photo(), r.center(), (r.height() * 0.3).clamp(40.0, 96.0), false, None);
     }
+    // a pausa leve: por cima da última imagem boa, uma animação de carregando (no máximo 1 s)
+    if screen && st.pausa.is_some_and(|(pid, _)| pid == person.profile_id) {
+        p.rect_filled(r, R_MD(), Color32::from_black_alpha(70));
+        let c = r.center();
+        let raio = (r.height() * 0.06).clamp(14.0, 26.0);
+        let giro = (t * 5.0) as f32;
+        let pontos: Vec<Pos2> = (0..=24).map(|i| {
+            let a = giro + i as f32 / 24.0 * std::f32::consts::PI * 1.5;
+            c + Vec2::new(a.cos(), a.sin()) * raio
+        }).collect();
+        p.add(egui::Shape::line(pontos, Stroke::new(3.5_f32, Color32::WHITE)));
+        ui.ctx().request_repaint();
+    }
     // a tela de outra pessoa que não está selecionada chega a 144p e 1 quadro/s: um véu escuro de leve e o "Assistir"
     // (o clique no quadro a seleciona; o botão só mostra isso)
     let selecionada = st.foco == Some(tile) || st.quadro_cheio == Some(tile);
@@ -1461,6 +1526,10 @@ fn person_row(ui: &mut egui::Ui, st: &CallState, id: usize, role: Option<&Role>,
     }
     resp.clicked().then(|| r.left_top())
 }
+
+/// A pausa leve dura no máximo isto (segundos) e acontece no máximo uma vez a cada `PAUSA_INTERVALO`.
+const PAUSA_MAX: f64 = 1.0;
+const PAUSA_INTERVALO: f64 = 300.0;
 
 /// Mostrar a tela em Full HD (1080p) em vez de HD (720p, o padrão): a chave escondida nas Configurações → O app,
 /// guardada em `<pasta>/tela`. Lida na hora de começar, para valer sem reabrir o app.
