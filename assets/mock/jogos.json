@@ -1,0 +1,6 @@
+{
+ "_sobre": "O estado ao vivo dos jogos (as 'sondas' do jogos.js), lido pelo app (src/jogos.rs) e pelo site em modo de teste (tools/site-mock.cjs). Os nomes e o formato são os das respostas da API.",
+ "bolotas": { "aberto": true, "jogadores": 4, "bots": 8 },
+ "quemdisse": { "lendo": false, "pronto": true, "suspeitos": 38 },
+ "livepixel": { "entries": ["kennzy", "mylon", "sonlas", "takeshi", "yetz", "navi", "brittico"] }
+}

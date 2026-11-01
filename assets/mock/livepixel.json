@@ -1,0 +1,127 @@
+{
+  "_sobre": "Dados de mentira do LivePixel: os mesmos para o app (livepixel.rs) e para o site (tools/site-mock.cjs). Cada arte é um desenho em pixels: cada letra das linhas é uma cor da paleta do jogo (0 a f, na ordem do PALETTE do livepixel.js) e o ponto é vazio. x e y são o canto de cima à esquerda, em células.",
+  "me": { "id": "lp-kennzy", "name": "Kennzy", "streamer": "kennzy", "pixels": 24, "max": 24, "mod": true },
+  "streamers": [
+    { "id": "kennzy", "name": "kennzy", "avatar": "kennzy.png" },
+    { "id": "rafaostreams", "name": "rafaostreams", "avatar": null },
+    { "id": "carolcosmaker", "name": "carolcosmaker", "avatar": null },
+    { "id": "baiano", "name": "baiano", "avatar": null },
+    { "id": "jukes", "name": "jukes", "avatar": null },
+    { "id": "minerva", "name": "minerva", "avatar": null }
+  ],
+  "leaderboard": [
+    { "id": "rafaostreams", "pixel_count": 48210 },
+    { "id": "kennzy", "pixel_count": 31877 },
+    { "id": "carolcosmaker", "pixel_count": 12456 },
+    { "id": "baiano", "pixel_count": 9032 },
+    { "id": "jukes", "pixel_count": 1204 },
+    { "id": "minerva", "pixel_count": 870 }
+  ],
+  "artists": [
+    { "id": "u-diogo", "display_name": "diogo_s07", "pixel_count": 6120 },
+    { "id": "u-carol", "display_name": "carolcosmaker", "pixel_count": 5880 },
+    { "id": "u-rafao", "display_name": "rafaostreams", "pixel_count": 4410 },
+    { "id": "u-chimel", "display_name": "chimel0", "pixel_count": 3990 },
+    { "id": "u-dudu", "display_name": "duduzintop", "pixel_count": 2210 }
+  ],
+  "artists_me": { "id": "lp-kennzy", "display_name": "Kennzy", "pixel_count": 812, "rank": 14 },
+  "chat": [
+    { "id": 1, "channel": "global", "username": "carolcosmaker", "streamerId": "carolcosmaker", "content": "rafão?" },
+    { "id": 2, "channel": "global", "username": "rafaostreams", "streamerId": "rafaostreams", "content": "oiee" },
+    { "id": 3, "channel": "global", "username": "rafaostreams", "streamerId": "rafaostreams", "content": "eu" },
+    { "id": 4, "channel": "global", "username": "carolcosmaker", "streamerId": "carolcosmaker", "content": "q cogumelo é esse? kkkkkkk" },
+    { "id": 5, "channel": "streamer:kennzy", "username": "diogo_s07", "streamerId": "kennzy", "content": "bora fechar o coração do K" },
+    { "id": 6, "channel": "global", "username": "chimel0", "streamerId": "kennzy", "content": "alguém faz o contorno do gato?" },
+    { "id": 7, "channel": "global", "username": "carolcosmaker", "streamerId": "carolcosmaker", "content": "ow alguém faz o sazonlas, pufavô" }
+  ],
+  "artes": [
+    {
+      "streamer": "kennzy", "user": "diogo_s07", "x": -22, "y": -14,
+      "rows": [
+        "00......00..",
+        "00.....00...",
+        "00....00....",
+        "00...00.....",
+        "00..00......",
+        "0000........",
+        "0000........",
+        "00..00......",
+        "00...00.....",
+        "00....00....",
+        "00.....00...",
+        "00......00.."
+      ]
+    },
+    {
+      "streamer": "kennzy", "user": "chimel0", "x": -9, "y": -12,
+      "rows": [
+        ".22...22.",
+        "2332.2332",
+        "233322332",
+        "233333332",
+        ".2333332.",
+        "..23332..",
+        "...232...",
+        "....2...."
+      ]
+    },
+    {
+      "streamer": "rafaostreams", "user": "rafaostreams", "x": 8, "y": -16,
+      "rows": [
+        "....0000....",
+        "..00222200..",
+        ".0222cc2220.",
+        ".02cc22cc20.",
+        "0222222222c0",
+        "0cc222222cc0",
+        "0cc22cc22cc0",
+        ".0000000000.",
+        "...0cccc0...",
+        "...0c0c00...",
+        "...0cccc0...",
+        "....0000...."
+      ]
+    },
+    {
+      "streamer": "carolcosmaker", "user": "carolcosmaker", "x": -6, "y": 4,
+      "rows": [
+        "0.........0",
+        "00.......00",
+        "0d0.....0d0",
+        "0dd00000dd0",
+        "0ddddddddd0",
+        "0dd0ddd0dd0",
+        "0dd0ddd0dd0",
+        "0ddddddddd0",
+        "0ddd202ddd0",
+        ".0ddd2ddd0.",
+        "..0000000.."
+      ]
+    },
+    {
+      "streamer": "baiano", "user": "duduzintop", "x": 14, "y": 2,
+      "rows": [
+        "......44",
+        ".....444",
+        "....444.",
+        "...444..",
+        "0.444...",
+        ".044....",
+        "..00....",
+        ".0.0....",
+        "0......."
+      ]
+    },
+    {
+      "streamer": "jukes", "user": "marcinpanelada", "x": -26, "y": 6,
+      "rows": [
+        "99999999",
+        "9aaaaaa9",
+        "9abbbba9",
+        "9abbbba9",
+        "9aaaaaa9",
+        "99999999"
+      ]
+    }
+  ]
+}

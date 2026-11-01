@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="300" height="300" viewBox="0 0 300 300">
+  <defs><path id="rlSpark" d="M4 0h2v4h4v2H6v4H4V6H0V4h4z" fill="#fff"/></defs>
+  <circle cx="150" cy="150" r="118" fill="#1a1c2c"/>
+  <path d="M150 150 L150.00 34.00 A116 116 0 0 1 240.69 77.68 Z" fill="#41a6f6"/><path d="M150 150 L240.69 77.68 A116 116 0 0 1 263.09 175.81 Z" fill="#38b764"/><path d="M150 150 L263.09 175.81 A116 116 0 0 1 200.33 254.51 Z" fill="#ef7d57"/><path d="M150 150 L200.33 254.51 A116 116 0 0 1 99.67 254.51 Z" fill="#b13e53"/><path d="M150 150 L99.67 254.51 A116 116 0 0 1 36.91 175.81 Z" fill="#5d275d"/><path d="M150 150 L36.91 175.81 A116 116 0 0 1 59.31 77.68 Z" fill="#3b5dc9"/><path d="M150 150 L59.31 77.68 A116 116 0 0 1 150.00 34.00 Z" fill="#e4ab00"/>
+  <g stroke="#fff" stroke-width="2.5" stroke-linecap="round"><line x1="150" y1="150" x2="150.00" y2="34.00"/><line x1="150" y1="150" x2="240.69" y2="77.68"/><line x1="150" y1="150" x2="263.09" y2="175.81"/><line x1="150" y1="150" x2="200.33" y2="254.51"/><line x1="150" y1="150" x2="99.67" y2="254.51"/><line x1="150" y1="150" x2="36.91" y2="175.81"/><line x1="150" y1="150" x2="59.31" y2="77.68"/></g>
+  <circle cx="150" cy="150" r="115" fill="none" stroke="#fff" stroke-width="3"/>
+  <use xlink:href="#rlSpark" x="80.2" y="71.5"/><use xlink:href="#rlSpark" x="128.0" y="48.5"/><use xlink:href="#rlSpark" x="122.4" y="98.1"/>
+  <circle cx="150.0" cy="43.0" r="3.6" fill="#fff" stroke="#1a1c2c" stroke-width="1.5"/><circle cx="233.7" cy="83.3" r="3.6" fill="#fff" stroke="#1a1c2c" stroke-width="1.5"/><circle cx="254.3" cy="173.8" r="3.6" fill="#fff" stroke="#1a1c2c" stroke-width="1.5"/><circle cx="196.4" cy="246.4" r="3.6" fill="#fff" stroke="#1a1c2c" stroke-width="1.5"/><circle cx="103.6" cy="246.4" r="3.6" fill="#fff" stroke="#1a1c2c" stroke-width="1.5"/><circle cx="45.7" cy="173.8" r="3.6" fill="#fff" stroke="#1a1c2c" stroke-width="1.5"/><circle cx="66.3" cy="83.3" r="3.6" fill="#fff" stroke="#1a1c2c" stroke-width="1.5"/>
+  
+</svg>

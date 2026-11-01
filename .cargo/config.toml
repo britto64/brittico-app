@@ -1,0 +1,4 @@
+# A voz (libwebrtc, que vem pronta) é compilada com a biblioteca do C embutida (/MT): o resto do .exe tem que ir igual,
+# senão o link falha com "mismatch detected for 'RuntimeLibrary'". Também deixa o .exe sem depender do vcruntime instalado.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
