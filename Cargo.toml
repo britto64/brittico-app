@@ -10,7 +10,7 @@ publish = false
 [package]
 name = "brittico-app"
 description = "O Brittico como programa: o site (brittico.xyz) tela por tela: Início, Jogos, LivePixel, Call com voz e tela, perfil e configurações."
-version = "1.0.3"
+version = "1.0.4"
 edition = "2021"
 publish = false
 

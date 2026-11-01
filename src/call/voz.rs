@@ -190,10 +190,14 @@ fn miniatura_de(bgra: &[u8], w: usize, h: usize, stride: usize) -> Option<(usize
     (!tudo_preto).then_some((mw, mh, out))
 }
 
-/// A camada extra da tela (a cheia é a da faixa), a mesma do site: só a tela selecionada vem em tempo real; as outras,
-/// na grade e na fileira do foco, recebem esta miniatura de 144p a 1 quadro por segundo (pedido dele, 2026-11-01).
+/// As camadas extras da tela (a cheia é a da faixa), as mesmas do site: a miniatura de 144p a 1 quadro por segundo (as
+/// telas não selecionadas, quando há mais de uma) e a média de 540p a 30, o degrau para onde a tela selecionada desce
+/// quando a banda aperta. Sem a média ela despencava para a miniatura a cada movimento (2026-11-01).
 fn camadas(_modo: Modo, _fullhd: bool) -> Vec<VideoPreset> {
-    vec![VideoPreset { width: 256, height: 144, encoding: VideoEncoding { max_bitrate: 100_000, max_framerate: 1.0 } }]
+    vec![
+        VideoPreset { width: 256, height: 144, encoding: VideoEncoding { max_bitrate: 100_000, max_framerate: 1.0 } },
+        VideoPreset { width: 960, height: 540, encoding: VideoEncoding { max_bitrate: 1_500_000, max_framerate: 30.0 } },
+    ]
 }
 
 /// A altura da tela que sai: HD (720p, o padrão) ou Full HD (1080p). Maior que isso é reduzido.

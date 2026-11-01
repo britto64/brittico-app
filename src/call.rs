@@ -271,9 +271,12 @@ impl CallState {
                 .flatten()
                 .filter_map(|t| if let Tile::Screen(i) = t { Some(dados::pessoa(i).profile_id) } else { None })
                 .collect();
-            let telas: Vec<i64> = self.videos.keys().filter(|(_, tela)| *tela).map(|(id, _)| *id).collect();
+            let eu = dados::pessoa(dados::eu()).profile_id;
+            let telas: Vec<i64> = self.videos.keys().filter(|(id, tela)| *tela && *id != eu).map(|(id, _)| *id).collect();
+            // com uma tela só para assistir não há o que escolher: ela vem em tempo real (a regra vale a partir de duas)
+            let unica = telas.len() <= 1;
             for id in telas {
-                v.pedir_qualidade((id, true), sel.contains(&id));
+                v.pedir_qualidade((id, true), unica || sel.contains(&id));
             }
         }
         // a voz caiu ou não entrou: avisa e solta
@@ -1062,12 +1065,13 @@ fn stage(ui: &mut egui::Ui, st: &mut CallState, main: Rect, ch: usize, t: f64) {
         }
     } else if let Some(f) = foco {
         // o grande à esquerda e a tira à direita, como o `.stage--focus` do site
+        let resto: Vec<Tile> = tiles.iter().copied().filter(|x| *x != f).collect();
         let strip_w = (grid.width() * 0.2).clamp(150.0, 240.0);
-        let big = Rect::from_min_max(grid.min, Pos2::new(grid.right() - strip_w - 10.0, grid.bottom()));
+        // sem mais ninguém na tira, o quadro em destaque ocupa a largura toda (não sobra a coluna vazia à direita)
+        let big = if resto.is_empty() { grid } else { Rect::from_min_max(grid.min, Pos2::new(grid.right() - strip_w - 10.0, grid.bottom())) };
         if let Some(a) = tile_at(ui, st, big, f, t, false) {
             acao = Some(a);
         }
-        let resto: Vec<Tile> = tiles.iter().copied().filter(|x| *x != f).collect();
         let th = ((grid.height() - 10.0 * (resto.len().max(1) as f32 - 1.0)) / resto.len().max(1) as f32).min(strip_w * 9.0 / 16.0 + 30.0);
         for (k, tile) in resto.into_iter().enumerate() {
             let r = Rect::from_min_size(Pos2::new(grid.right() - strip_w, grid.top() + k as f32 * (th + 10.0)), Vec2::new(strip_w, th));
@@ -1179,7 +1183,9 @@ fn draw_tile(ui: &egui::Ui, st: &CallState, r: Rect, tile: Tile, t: f64) {
     // a tela de outra pessoa que não está selecionada chega a 144p e 1 quadro/s: um véu escuro de leve e o "Assistir"
     // (o clique no quadro a seleciona; o botão só mostra isso)
     let selecionada = st.foco == Some(tile) || st.quadro_cheio == Some(tile);
-    if screen && id != dados::eu() && !selecionada {
+    let eu_pid = dados::pessoa(dados::eu()).profile_id;
+    let telas_remotas = st.videos.keys().filter(|(pid, tela)| *tela && *pid != eu_pid).count();
+    if screen && id != dados::eu() && !selecionada && telas_remotas > 1 {
         p.rect_filled(r, R_MD(), Color32::from_black_alpha(82));
         let tam = if r.height() < 120.0 { 12.0 } else { 14.0 };
         let largura = ui::text_width(&p, "Assistir", f7(tam), 0.0) + if tam < 13.0 { 26.0 } else { 44.0 };
