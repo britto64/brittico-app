@@ -69,6 +69,9 @@ pub struct App {
     pub perfil: perfil::PerfilState,
     pub lp: livepixel::LpState,
     pub config: config::ConfigState,
+    /// A aceleração da roda do mouse (ver `raw_input_hook`).
+    roda_acel: f32,
+    roda_t: f64,
     /// Quem está usando (a sessão do site) e o cartão de entrar.
     pub conta: conta::Conta,
     /// O que está escrito na busca do topo e o resultado destacado pelas setas.
@@ -90,7 +93,7 @@ impl App {
         theme::install(&cc.egui_ctx);
         egui_extras::install_image_loaders(&cc.egui_ctx);
         // abre no Início, como o site
-        let mut app = Self { section: Section::Home, call: call::CallState::default(), home: home::HomeState::default(), jogos: jogos::JogosState::default(), perfil: perfil::PerfilState::default(), lp: livepixel::LpState::default(), config: config::ConfigState::default(), conta: conta::Conta::default(), busca: String::new(), busca_cursor: None, roteiro: Roteiro::default(), roteiro_ol: Roteiro::default(), tema_aplicado: None, olheiro: olheiro::Janela::nova(&cc.egui_ctx), secao_antes: Section::Home };
+        let mut app = Self { section: Section::Home, call: call::CallState::default(), home: home::HomeState::default(), jogos: jogos::JogosState::default(), perfil: perfil::PerfilState::default(), lp: livepixel::LpState::default(), config: config::ConfigState::default(), roda_acel: 1.0, roda_t: -10.0, conta: conta::Conta::default(), busca: String::new(), busca_cursor: None, roteiro: Roteiro::default(), roteiro_ol: Roteiro::default(), tema_aplicado: None, olheiro: olheiro::Janela::nova(&cc.egui_ctx), secao_antes: Section::Home };
         perfil::aparencia_local(&mut app.perfil.aj);
         app.conta.iniciar(&cc.egui_ctx);
         // para as capturas: BRITTICO_TELA=inicio-teste | jogos | livepixel | perfil | perfil-baixo | perfil-aba1..5 | geral | sala | dentro (sem nada, o Início)
@@ -304,6 +307,25 @@ impl App {
 
 impl eframe::App for App {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        // a roda do mouse: mais rápida que o padrão do egui (40 px por clique) e com aceleração, como num navegador:
+        // cliques seguidos em menos de 0,2 s vão somando velocidade (até 4×); parou, volta ao normal
+        let agora = raw.time.unwrap_or(0.0);
+        for ev in raw.events.iter_mut() {
+            if let egui::Event::MouseWheel { unit, delta, modifiers } = ev {
+                if modifiers.ctrl {
+                    continue;
+                }
+                match unit {
+                    egui::MouseWheelUnit::Line => {
+                        self.roda_acel = if agora - self.roda_t < 0.2 { (self.roda_acel + 0.4).min(4.0) } else { 1.0 };
+                        self.roda_t = agora;
+                        *delta *= 2.5 * self.roda_acel;
+                    }
+                    egui::MouseWheelUnit::Point => *delta *= 1.5,
+                    egui::MouseWheelUnit::Page => {}
+                }
+            }
+        }
         // o eframe passa por aqui a entrada de cada janela: cada uma tem o seu roteiro
         let (r, vp) = if raw.viewport_id == olheiro::vp() { (&mut self.roteiro_ol, olheiro::vp()) } else { (&mut self.roteiro, egui::ViewportId::ROOT) };
         if r.ativo() {
@@ -313,6 +335,8 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let _t0 = std::time::Instant::now();
+        let _med = scopeguard_tempo(_t0);
         self.aplicar_tema(ctx);
         self.conta.passo(ctx);
         let t_agora = ctx.input(|i| i.time);
@@ -389,4 +413,17 @@ impl eframe::App for App {
             ctx.request_repaint_after(Duration::from_millis(33));
         }
     }
+}
+
+/// Para medir (BRITTICO_TEMPO=1): quanto leva cada quadro de `update`, impresso de tempos em tempos.
+fn scopeguard_tempo(t0: std::time::Instant) -> impl Drop {
+    struct G(std::time::Instant);
+    impl Drop for G {
+        fn drop(&mut self) {
+            if std::env::var("BRITTICO_TEMPO").is_ok() {
+                eprintln!("[quadro] {:.1} ms", self.0.elapsed().as_secs_f64() * 1000.0);
+            }
+        }
+    }
+    G(t0)
 }
