@@ -1,0 +1,5 @@
+#!/bin/sh
+# O AppImage leva o OpenSSL 3 junto (usr/lib), para abrir em distribuições que não o têm.
+AQUI="$(dirname "$(readlink -f "$0")")"
+export LD_LIBRARY_PATH="$AQUI/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec "$AQUI/usr/bin/brittico" "$@"

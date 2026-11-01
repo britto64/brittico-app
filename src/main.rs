@@ -77,6 +77,8 @@ pub struct App {
     roda_t: f64,
     /// Quando começou o último quadro (o teto de quadros sem vsync, ver `segurar_ritmo`).
     ultimo_quadro: std::time::Instant,
+    /// `--minimizado` (o atalho "iniciar com o Windows" do instalador): no 1º quadro a janela vai para a barra de tarefas.
+    minimizar_ao_abrir: bool,
     /// Quem está usando (a sessão do site) e o cartão de entrar.
     pub conta: conta::Conta,
     /// O que está escrito na busca do topo e o resultado destacado pelas setas.
@@ -98,7 +100,7 @@ impl App {
         theme::install(&cc.egui_ctx);
         egui_extras::install_image_loaders(&cc.egui_ctx);
         // abre no Início, como o site
-        let mut app = Self { section: Section::Home, call: call::CallState::default(), home: home::HomeState::default(), jogos: jogos::JogosState::default(), perfil: perfil::PerfilState::default(), lp: livepixel::LpState::default(), config: config::ConfigState::default(), roda_acel: 1.0, roda_t: -10.0, ultimo_quadro: std::time::Instant::now(), conta: conta::Conta::default(), busca: String::new(), busca_cursor: None, roteiro: Roteiro::default(), roteiro_ol: Roteiro::default(), tema_aplicado: None, olheiro: olheiro::Janela::nova(&cc.egui_ctx), secao_antes: Section::Home };
+        let mut app = Self { section: Section::Home, call: call::CallState::default(), home: home::HomeState::default(), jogos: jogos::JogosState::default(), perfil: perfil::PerfilState::default(), lp: livepixel::LpState::default(), config: config::ConfigState::default(), roda_acel: 1.0, roda_t: -10.0, ultimo_quadro: std::time::Instant::now(), minimizar_ao_abrir: std::env::args().any(|a| a == "--minimizado"), conta: conta::Conta::default(), busca: String::new(), busca_cursor: None, roteiro: Roteiro::default(), roteiro_ol: Roteiro::default(), tema_aplicado: None, olheiro: olheiro::Janela::nova(&cc.egui_ctx), secao_antes: Section::Home };
         perfil::aparencia_local(&mut app.perfil.aj);
         app.conta.iniciar(&cc.egui_ctx);
         // para as capturas: BRITTICO_TELA=inicio-teste | jogos | livepixel | perfil | perfil-baixo | perfil-aba1..5 | geral | sala | dentro (sem nada, o Início)
@@ -341,6 +343,9 @@ impl eframe::App for App {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         segurar_ritmo(&mut self.ultimo_quadro);
+        if std::mem::take(&mut self.minimizar_ao_abrir) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
         let _t0 = std::time::Instant::now();
         let _med = scopeguard_tempo(_t0);
         self.aplicar_tema(ctx);

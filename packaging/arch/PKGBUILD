@@ -1,0 +1,26 @@
+# Pacote do Arch a partir do .tar.gz da Release (o mesmo binário dos outros pacotes de Linux).
+#   makepkg -si           baixa a versão de pkgver da Release e instala
+# No GitHub Actions o .tar.gz já está na pasta (LOCAL=1) e não é baixado.
+pkgname=brittico-bin
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="O feed, a call e o LoL de proximidade num app só"
+arch=('x86_64')
+url="https://brittico.xyz/app/"
+license=('LicenseRef-Brittico')
+depends=('glib2' 'openssl' 'alsa-lib' 'libglvnd' 'libxkbcommon' 'gcc-libs' 'glibc')
+optdepends=('xdg-desktop-portal: mostrar a tela na Call'
+            'pipewire: mostrar a tela na Call')
+provides=('brittico')
+conflicts=('brittico')
+options=('!strip' '!debug')
+if [ -n "${LOCAL:-}" ]; then
+  source=("brittico-linux-x86_64.tar.gz")
+else
+  source=("brittico-linux-x86_64-$pkgver.tar.gz::https://github.com/britto64/brittico-app/releases/download/v$pkgver/brittico-linux-x86_64.tar.gz")
+fi
+sha256sums=('SKIP')
+
+package() {
+  cp -a "$srcdir/brittico/usr" "$pkgdir/"
+}

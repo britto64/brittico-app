@@ -1,0 +1,160 @@
+# Gera o Brittico para Windows e Linux em todo push na main, e publica tudo numa Release quando chega uma tag v*.
+#
+# Windows (num Windows de verdade, compilador da Microsoft): o instalador (Inno Setup) e o .exe portátil.
+# Linux (Ubuntu 22.04, para rodar em distribuições de 2022 para cá): .tar.gz, AppImage, .deb e .rpm;
+# e o pacote do Arch, montado com o makepkg num container do Arch a partir do mesmo .tar.gz.
+#
+# Os nomes dos arquivos não mudam de versão para versão: o site (brittico.xyz/app/) aponta para
+# releases/latest/download/<nome>.
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write      # criar a Release
+  id-token: write      # atestação de origem
+  attestations: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  versao:
+    runs-on: ubuntu-latest
+    outputs:
+      v: ${{ steps.v.outputs.v }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          v=$(awk '/^\[package\]/{p=1} p && /^version *=/{gsub(/[" ]/,"",$0); split($0,a,"="); print a[2]; exit}' Cargo.toml)
+          echo "v=$v" >> "$GITHUB_OUTPUT"
+          echo "versão $v"
+          if [[ "$GITHUB_REF" == refs/tags/v* && "${GITHUB_REF#refs/tags/v}" != "$v" ]]; then
+            echo "::error::a tag ${GITHUB_REF#refs/tags/} não bate com a versão $v do Cargo.toml"; exit 1
+          fi
+
+  windows:
+    needs: versao
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Compilar
+        run: cargo build --release --locked
+
+      - name: Instalador (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "C:\IS6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            Invoke-WebRequest https://github.com/jrsoftware/issrc/releases/download/is-6_7_4/innosetup-6.7.4.exe -OutFile is.exe
+            Start-Process -Wait is.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CURRENTUSER','/DIR=C:\IS6'
+          }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          & $iscc /Q "/DVersao=${{ needs.versao.outputs.v }}" "/DExe=..\..\target\release\brittico.exe" packaging\windows\brittico.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item target\release\brittico.exe dist\Brittico-portable-x64.exe
+          Get-ChildItem dist
+
+      - uses: actions/attest-build-provenance@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          subject-path: |
+            dist/Brittico-Setup-x64.exe
+            dist/Brittico-portable-x64.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/Brittico-Setup-x64.exe
+            dist/Brittico-portable-x64.exe
+
+  linux:
+    needs: versao
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bibliotecas do sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libssl-dev libasound2-dev libglib2.0-dev \
+            libx11-dev libxext-dev libxfixes-dev libxdamage-dev libxrandr-dev libxcomposite-dev \
+            libdrm-dev libgbm-dev libva-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev rpm file
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Compilar
+        run: cargo build --release --locked
+
+      - name: Pacotes
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          curl -sSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          APPIMAGETOOL=$PWD/appimagetool packaging/linux/empacotar.sh "${{ needs.versao.outputs.v }}" target/release/brittico dist
+          ls -la dist
+
+      - uses: actions/attest-build-provenance@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          subject-path: dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+
+  arch:
+    needs: [versao, linux]
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux
+          path: linux
+      - name: makepkg
+        run: |
+          pacman -Syu --noconfirm --needed base-devel
+          useradd -m construtor
+          mkdir -p /tmp/arch && cp packaging/arch/PKGBUILD linux/brittico-linux-x86_64.tar.gz /tmp/arch/
+          sed -i "s/^pkgver=.*/pkgver=${{ needs.versao.outputs.v }}/" /tmp/arch/PKGBUILD
+          chown -R construtor /tmp/arch
+          su construtor -c "cd /tmp/arch && LOCAL=1 makepkg -f --nodeps"
+          mkdir -p dist && cp /tmp/arch/*.pkg.tar.zst dist/brittico-x86_64.pkg.tar.zst
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch
+          path: dist/brittico-x86_64.pkg.tar.zst
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [versao, windows, linux, arch]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: arte
+          merge-multiple: true
+      - name: Somas SHA-256 e notas
+        run: |
+          cd arte && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt && cd ..
+          f=packaging/notas/v${{ needs.versao.outputs.v }}.md
+          { [ -f "$f" ] && cat "$f" && echo; cat packaging/notas/rodape.md; } > notas.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: Brittico ${{ needs.versao.outputs.v }}
+          body_path: notas.md
+          files: arte/*

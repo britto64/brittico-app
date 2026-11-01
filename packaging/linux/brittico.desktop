@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Brittico
+GenericName=Feed, call e LoL de proximidade
+Comment=O feed, a call com voz e tela e o LoL de proximidade num app só
+Exec=brittico %U
+Icon=brittico
+Terminal=false
+Categories=Network;Chat;InstantMessaging;Game;
+Keywords=brittico;kennzy;call;voz;livepixel;lol;
+StartupWMClass=brittico

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>xyz.brittico.Brittico</id>
+  <name>Brittico</name>
+  <summary>O feed, a call com voz e tela e o LoL de proximidade num app só</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <launchable type="desktop-id">brittico.desktop</launchable>
+  <url type="homepage">https://brittico.xyz/app/</url>
+  <url type="bugtracker">https://github.com/britto64/brittico-app/issues</url>
+  <description>
+    <p>O Brittico como programa: o feed, a Call com voz limpa e tela em 1080p ou 60 fps, o LivePixel
+    e o LoL de proximidade, que lê o minimapa e ajusta o volume de cada aliado pela distância.</p>
+  </description>
+  <content_rating type="oars-1.1"/>
+</component>
