@@ -81,8 +81,16 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{app}\brittico.exe"; Description: "{cm:AbrirAgora}"; Flags: nowait postinstall skipifsilent
+; a atualização de dentro do app roda este instalador em silêncio com /ATUALIZAR=1: no fim, o Brittico abre sozinho
+Filename: "{app}\brittico.exe"; Flags: nowait runasoriginaluser; Check: EhAtualizacao
 
 [Code]
+// /ATUALIZAR=1: o instalador foi aberto pela atualização do próprio app (ver src/atualizar.rs)
+function EhAtualizacao: Boolean;
+begin
+  Result := ExpandConstant('{param:ATUALIZAR|0}') = '1';
+end;
+
 // Reinstalar sem marcar "abrir com o Windows" tira a entrada que uma instalação antiga tinha posto.
 procedure CurStepChanged(CurStep: TSetupStep);
 begin

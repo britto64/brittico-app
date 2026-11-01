@@ -12,6 +12,7 @@
 // no Windows, um programa de janela: sem o console preto aberto junto
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod atualizar;
 mod call;
 mod config;
 mod conta;
@@ -67,6 +68,7 @@ fn main() -> eframe::Result {
 
 pub struct App {
     pub section: Section,
+    pub atualizador: atualizar::Atualizador,
     pub call: call::CallState,
     pub home: home::HomeState,
     pub jogos: jogos::JogosState,
@@ -101,7 +103,7 @@ impl App {
         theme::install(&cc.egui_ctx);
         egui_extras::install_image_loaders(&cc.egui_ctx);
         // abre no Início, como o site
-        let mut app = Self { section: Section::Home, call: call::CallState::default(), home: home::HomeState::default(), jogos: jogos::JogosState::default(), perfil: perfil::PerfilState::default(), lp: livepixel::LpState::default(), config: config::ConfigState::default(), roda_acel: 1.0, roda_t: -10.0, ultimo_quadro: std::time::Instant::now(), minimizar_ao_abrir: std::env::args().any(|a| a == "--minimizado"), conta: conta::Conta::default(), busca: String::new(), busca_cursor: None, roteiro: Roteiro::default(), roteiro_ol: Roteiro::default(), tema_aplicado: None, olheiro: olheiro::Janela::nova(&cc.egui_ctx), secao_antes: Section::Home };
+        let mut app = Self { section: Section::Home, atualizador: atualizar::Atualizador::default(), call: call::CallState::default(), home: home::HomeState::default(), jogos: jogos::JogosState::default(), perfil: perfil::PerfilState::default(), lp: livepixel::LpState::default(), config: config::ConfigState::default(), roda_acel: 1.0, roda_t: -10.0, ultimo_quadro: std::time::Instant::now(), minimizar_ao_abrir: std::env::args().any(|a| a == "--minimizado"), conta: conta::Conta::default(), busca: String::new(), busca_cursor: None, roteiro: Roteiro::default(), roteiro_ol: Roteiro::default(), tema_aplicado: None, olheiro: olheiro::Janela::nova(&cc.egui_ctx), secao_antes: Section::Home };
         perfil::aparencia_local(&mut app.perfil.aj);
         app.conta.iniciar(&cc.egui_ctx);
         // para as capturas: BRITTICO_TELA=inicio-teste | jogos | livepixel | perfil | perfil-baixo | perfil-aba1..5 | geral | sala | dentro (sem nada, o Início)
@@ -355,6 +357,7 @@ impl eframe::App for App {
         self.perfil.passo_prefs(ctx, self.conta.geracao, t_agora);
         // a Call vive fora da tela dela: os servidores da trilha, a voz e os avisos chegam em qualquer seção
         self.call.passo(ctx, self.conta.geracao, t_agora);
+        self.atualizador.passo(ctx);
         egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::CREAM_1())).show(ctx, |ui| {
             let full = ui.max_rect();
             let t = ctx.input(|i| i.time);

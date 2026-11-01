@@ -10,7 +10,7 @@ publish = false
 [package]
 name = "brittico-app"
 description = "O Brittico como programa: o site (brittico.xyz) tela por tela: Início, Jogos, LivePixel, Call com voz e tela, perfil e configurações."
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 publish = false
 
@@ -28,6 +28,8 @@ rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
+# a conferência do arquivo da atualização com o SHA256SUMS.txt do lançamento
+sha2 = "0.10"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # a API do Brittico (a mesma do site) e os WebSockets do LivePixel e da Call
 ureq = { version = "3", default-features = false, features = ["native-tls", "json"] }

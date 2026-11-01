@@ -51,6 +51,7 @@ pub fn topbar(ui: &mut egui::Ui, app: &mut App, full: Rect) {
 
     // o botão do tema e a conta
     let theme_btn = Rect::from_min_size(Pos2::new(bar.right() - 255.0, o.y + 10.0), Vec2::splat(36.0));
+    atualizacao(ui, app, Pos2::new(theme_btn.left() - 10.0, theme_btn.center().y));
     let r = ui.interact(theme_btn, ui.id().with("tema"), Sense::click()).on_hover_cursor(CursorIcon::PointingHand).on_hover_text("Alternar tema claro/escuro");
     if r.clicked() {
         // o botão do topo alterna entre os dois, deixando de seguir o sistema (como o do site)
@@ -458,4 +459,59 @@ pub fn soon(ui: &mut egui::Ui, body: Rect, s: Section) {
     };
     text(p, c + Vec2::new(0.0, 62.0), Align2::CENTER_CENTER, label, patua(20.0), INK(), 0.0);
     text(p, c + Vec2::new(0.0, 92.0), Align2::CENTER_CENTER, msg, f6(13.5), SOFT(), 0.0);
+}
+
+/// O aviso de versão nova, à esquerda do botão do tema (o do Discord): "Atualizar para 1.0.1", a barra do download, o
+/// "Reiniciando…" e, se falhar, "Tentar de novo" com o motivo no mouse.
+fn atualizacao(ui: &mut egui::Ui, app: &mut App, direita: Pos2) {
+    use crate::atualizar::Fase;
+    use std::sync::atomic::Ordering;
+    let v = |tag: &str| tag.trim_start_matches('v').to_owned();
+    let (rotulo, icone, progresso, dica): (String, egui::ImageSource<'static>, Option<f32>, Option<String>) = match &app.atualizador.fase {
+        Fase::Nada => return,
+        Fase::Disponivel(tag) if app.atualizador.tipo.sozinho() => (format!("Atualizar para {}", v(tag)), ic!("download"), None, None),
+        Fase::Disponivel(tag) => (format!("Versão {} disponível", v(tag)), ic!("download"), None, None),
+        Fase::Baixando { tag, feito, total } => {
+            let (f, t) = (feito.load(Ordering::Relaxed), total.load(Ordering::Relaxed));
+            let pct = (t > 0).then(|| (f as f32 / t as f32).clamp(0.0, 1.0));
+            let txt = match pct {
+                Some(p) => format!("Baixando {} · {}%", v(tag), (p * 100.0) as u32),
+                None => format!("Baixando {} · {} MB", v(tag), f / 1_048_576),
+            };
+            (txt, ic!("download"), Some(pct.unwrap_or(0.0)), None)
+        }
+        Fase::Trocando => ("Reiniciando…".to_owned(), ic!("refresh"), Some(1.0), None),
+        Fase::Erro { msg, .. } => ("Atualização falhou · tentar de novo".to_owned(), ic!("alert"), None, Some(msg.clone())),
+    };
+    let p = ui.painter().clone();
+    let w = 16.0 + 16.0 + 8.0 + ui::text_width(&p, &rotulo, f7(12.5), 0.0) + 16.0;
+    let r = Rect::from_min_size(Pos2::new(direita.x - w, direita.y - 18.0), Vec2::new(w, 36.0));
+    let ocupado = progresso.is_some();
+    let mut resp = ui.interact(r, ui.id().with("atualizar"), if ocupado { Sense::hover() } else { Sense::click() });
+    if !ocupado {
+        resp = resp.on_hover_cursor(CursorIcon::PointingHand);
+    }
+    if let Some(d) = &dica {
+        resp = resp.on_hover_text(d);
+    }
+    let erro = dica.is_some();
+    let base = if erro { Color32::from_rgb(200, 70, 60) } else { SECONDARY() };
+    match progresso {
+        Some(f) => {
+            p.rect_filled(r, 18.0, mix(base, CREAM_2(), 0.25));
+            if f > 0.0 {
+                let cheio = Rect::from_min_max(r.min, Pos2::new(r.left() + r.width() * f, r.bottom()));
+                p.with_clip_rect(cheio).rect_filled(r, 18.0, base);
+            }
+        }
+        None => {
+            p.rect_filled(r, 18.0, if resp.hovered() { mix(base, Color32::WHITE, 0.9) } else { base });
+        }
+    }
+    let cor = if erro { Color32::WHITE } else { ON_SECONDARY() };
+    ui::icon(ui, icone, r.left_center() + Vec2::new(16.0 + 8.0, 0.0), 16.0, cor);
+    text(&p, r.left_center() + Vec2::new(16.0 + 16.0 + 8.0, 0.0), Align2::LEFT_CENTER, &rotulo, f7(12.5), cor, 0.0);
+    if resp.clicked() {
+        app.atualizador.atualizar(ui.ctx());
+    }
 }
