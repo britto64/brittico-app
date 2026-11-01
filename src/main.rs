@@ -57,7 +57,10 @@ fn main() -> eframe::Result {
         let img = img.to_rgba8();
         viewport = viewport.with_icon(std::sync::Arc::new(egui::IconData { width: img.width(), height: img.height(), rgba: img.into_raw() }));
     }
-    let options = eframe::NativeOptions { viewport, vsync: true, ..Default::default() };
+    // vsync desligado: no Wayland, com ele ligado, cada quadro espera o "pode desenhar" do compositor; com a janela numa
+    // área de trabalho escondida esse aviso nunca vem, o app trava ali e o Hyprland diz que ele "não está respondendo".
+    // O ritmo fica com os pedidos de redesenho e com o teto de `segurar_ritmo`.
+    let options = eframe::NativeOptions { viewport, vsync: false, ..Default::default() };
     eframe::run_native("Brittico", options, Box::new(|cc| Ok(Box::new(App::new(cc)))))
 }
 
@@ -72,6 +75,8 @@ pub struct App {
     /// A aceleração da roda do mouse (ver `raw_input_hook`).
     roda_acel: f32,
     roda_t: f64,
+    /// Quando começou o último quadro (o teto de quadros sem vsync, ver `segurar_ritmo`).
+    ultimo_quadro: std::time::Instant,
     /// Quem está usando (a sessão do site) e o cartão de entrar.
     pub conta: conta::Conta,
     /// O que está escrito na busca do topo e o resultado destacado pelas setas.
@@ -93,7 +98,7 @@ impl App {
         theme::install(&cc.egui_ctx);
         egui_extras::install_image_loaders(&cc.egui_ctx);
         // abre no Início, como o site
-        let mut app = Self { section: Section::Home, call: call::CallState::default(), home: home::HomeState::default(), jogos: jogos::JogosState::default(), perfil: perfil::PerfilState::default(), lp: livepixel::LpState::default(), config: config::ConfigState::default(), roda_acel: 1.0, roda_t: -10.0, conta: conta::Conta::default(), busca: String::new(), busca_cursor: None, roteiro: Roteiro::default(), roteiro_ol: Roteiro::default(), tema_aplicado: None, olheiro: olheiro::Janela::nova(&cc.egui_ctx), secao_antes: Section::Home };
+        let mut app = Self { section: Section::Home, call: call::CallState::default(), home: home::HomeState::default(), jogos: jogos::JogosState::default(), perfil: perfil::PerfilState::default(), lp: livepixel::LpState::default(), config: config::ConfigState::default(), roda_acel: 1.0, roda_t: -10.0, ultimo_quadro: std::time::Instant::now(), conta: conta::Conta::default(), busca: String::new(), busca_cursor: None, roteiro: Roteiro::default(), roteiro_ol: Roteiro::default(), tema_aplicado: None, olheiro: olheiro::Janela::nova(&cc.egui_ctx), secao_antes: Section::Home };
         perfil::aparencia_local(&mut app.perfil.aj);
         app.conta.iniciar(&cc.egui_ctx);
         // para as capturas: BRITTICO_TELA=inicio-teste | jogos | livepixel | perfil | perfil-baixo | perfil-aba1..5 | geral | sala | dentro (sem nada, o Início)
@@ -335,6 +340,7 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        segurar_ritmo(&mut self.ultimo_quadro);
         let _t0 = std::time::Instant::now();
         let _med = scopeguard_tempo(_t0);
         self.aplicar_tema(ctx);
@@ -413,6 +419,17 @@ impl eframe::App for App {
             ctx.request_repaint_after(Duration::from_millis(33));
         }
     }
+}
+
+/// Sem vsync, uma animação que pede redesenho sem parar (um aviso aparecendo, por exemplo) rodaria a centenas de quadros
+/// por segundo. Este teto segura em ~165 por segundo: espera o resto do intervalo antes de começar o próximo quadro.
+fn segurar_ritmo(ultimo: &mut std::time::Instant) {
+    const MIN: Duration = Duration::from_micros(6_000);
+    let passou = ultimo.elapsed();
+    if passou < MIN {
+        std::thread::sleep(MIN - passou);
+    }
+    *ultimo = std::time::Instant::now();
 }
 
 /// Para medir (BRITTICO_TEMPO=1): quanto leva cada quadro de `update`, impresso de tempos em tempos.
