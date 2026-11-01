@@ -90,6 +90,7 @@ pub struct CallState {
     videos: HashMap<(i64, bool), (egui::TextureHandle, u64, Vec2)>,
     /// Os aparelhos escolhidos nas Configurações (nome; vazio = o padrão do sistema).
     pub auto_entrou: bool,
+    pub auto_presi: bool,
     pub mic_nome: String,
     pub saida_nome: String,
     /// Quando mandou o último "digitando".
@@ -145,6 +146,7 @@ impl Default for CallState {
             link_convite: None,
             link_rx: None,
             auto_entrou: false,
+            auto_presi: false,
         }
     }
 }
@@ -498,6 +500,9 @@ pub fn show(ui: &mut egui::Ui, st: &mut CallState, body: Rect, t: f64, geracao: 
                 }
             }
         }
+    } else if st.presi.is_none() && std::env::var("BRITTICO_PRESI").is_ok() && !st.auto_presi {
+        st.auto_presi = true;
+        st.presi_alternar(ui.ctx());
     }
     if crate::conta::perfil_id() == 0 {
         text(ui.painter(), body.center(), Align2::CENTER_CENTER, "Conecte a conta para entrar na Call.", f6(14.0), FAINT(), 0.0);
