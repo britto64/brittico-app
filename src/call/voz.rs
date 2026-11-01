@@ -318,7 +318,7 @@ async fn rodar(token_path: String, entrada: Option<(String, String)>, mic: Strin
     let mut tela: Option<(LocalVideoTrack, std::sync::mpsc::SyncSender<()>)> = None;
     if std::env::var("BRITTICO_VOZ_TELA").is_ok() {
         let modo = if std::env::var("BRITTICO_VOZ_TELA").is_ok_and(|v| v == "fluidez") { Modo::Fluidez } else { Modo::Qualidade };
-        match mostrar_tela(&room, modo, None).await {
+        match mostrar_tela(&room, modo, None, &estado, &ctx).await {
             Ok(t) => { tela = Some(t); mudar(&|s| s.tela = true); }
             Err(e) => eprintln!("[voz] tela: {e}"),
         }
@@ -399,7 +399,7 @@ async fn rodar(token_path: String, entrada: Option<(String, String)>, mic: Strin
                     Some(Cmd::Surdo(s)) => if let Ok(mut m) = mistura.lock() { m.surdo = s },
                     Some(Cmd::Volume(id, v)) => if let Ok(mut m) = mistura.lock() { m.alvo(&id.to_string(), v); m.alvo(&format!("{id}:tela"), v) },
                     Some(Cmd::Tela(Some((modo, escolha)))) if tela.is_none() => {
-                        match mostrar_tela(&room, modo, escolha).await {
+                        match mostrar_tela(&room, modo, escolha, &estado, &ctx).await {
                             Ok(t) => { tela = Some(t); mudar(&|s| s.tela = true); }
                             Err(e) => mudar(&|s| { s.tela = false; s.aviso = Some(e.clone()); }),
                         }
@@ -409,7 +409,8 @@ async fn rodar(token_path: String, entrada: Option<(String, String)>, mic: Strin
                             drop(parar);
                             let _ = room.local_participant().unpublish_track(&faixa_tela.sid()).await;
                         }
-                        mudar(&|s| s.tela = false);
+                        let eu: i64 = room.local_participant().identity().to_string().parse().unwrap_or(0);
+                        mudar(&|s| { s.tela = false; s.videos.remove(&(eu, true)); });
                     }
                     Some(Cmd::Tela(Some(_))) => {}
                     Some(Cmd::Sair) | None => break,
@@ -433,7 +434,14 @@ async fn rodar(token_path: String, entrada: Option<(String, String)>, mic: Strin
 /// Mostra a tela: o capturador do libwebrtc (no Windows a tela inteira; no Linux com Wayland o seletor do sistema)
 /// manda quadros BGRA, que viram I420 (no máximo 1080p) e saem por uma faixa de vídeo `Screenshare` no ritmo, no bitrate
 /// e com a preferência do `modo`.
-async fn mostrar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>) -> Result<(LocalVideoTrack, std::sync::mpsc::SyncSender<()>), String> {
+async fn mostrar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, estado: &Arc<Mutex<Estado>>, ctx: &eframe::egui::Context) -> Result<(LocalVideoTrack, std::sync::mpsc::SyncSender<()>), String> {
+    // a prévia da própria tela (como no site): uma cópia pequena, ~10 por segundo, no quadro de quem mostra
+    let eu: i64 = room.local_participant().identity().to_string().parse().unwrap_or(0);
+    let (est_previa, ctx_previa) = (estado.clone(), ctx.clone());
+    let mut ultima_previa = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    let log = std::env::var("BRITTICO_VOZ_LOG").is_ok();
+    let mut contados = 0u64;
+    let mut desde = std::time::Instant::now();
     use livekit::webrtc::desktop_capturer::{DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions};
     #[cfg(target_os = "linux")]
     let generico = if seletor_do_sistema() { DesktopCaptureSourceType::Generic } else { DesktopCaptureSourceType::Screen };
@@ -497,6 +505,33 @@ async fn mostrar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>) -> Resu
                     let nw = ((w as u64 * ALTURA_MAX as u64 / h as u64) as i32) & !1;
                     buf = buf.scale(nw, ALTURA_MAX as i32);
                 }
+                if ultima_previa.elapsed() >= std::time::Duration::from_millis(100) {
+                    ultima_previa = std::time::Instant::now();
+                    use livekit::webrtc::video_frame::native::VideoFrameBufferExt;
+                    use livekit::webrtc::video_frame::VideoBuffer;
+                    let (bw, bh) = (buf.width() as i32, buf.height() as i32);
+                    let pw = bw.min(960) & !1;
+                    let ph = ((bh as i64 * pw as i64 / bw.max(1) as i64) as i32) & !1;
+                    if pw > 0 && ph > 0 {
+                        let menor = buf.scale(pw, ph);
+                        let (w2, h2) = (pw as usize, ph as usize);
+                        let mut rgba = vec![0u8; w2 * h2 * 4];
+                        menor.to_argb(livekit::webrtc::video_frame::VideoFormatType::ABGR, &mut rgba, (w2 * 4) as u32, pw, ph);
+                        if let Ok(mut e) = est_previa.lock() {
+                            let n = e.videos.get(&(eu, true)).map_or(1, |q| q.n + 1);
+                            e.videos.insert((eu, true), Quadro { w: w2, h: h2, rgba, n });
+                        }
+                        ctx_previa.request_repaint();
+                    }
+                }
+                if log {
+                    contados += 1;
+                    if desde.elapsed() >= std::time::Duration::from_secs(2) {
+                        eprintln!("[voz] tela: {:.1} quadros/s capturados ({w}x{h})", contados as f64 / desde.elapsed().as_secs_f64());
+                        contados = 0;
+                        desde = std::time::Instant::now();
+                    }
+                }
                 let quadro = VideoFrame { rotation: VideoRotation::VideoRotation0, timestamp_us: 0, frame_metadata: None, buffer: buf };
                 fonte.capture_frame(&quadro);
                 if sit.compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed).is_ok() && std::env::var("BRITTICO_VOZ_LOG").is_ok() {
@@ -549,6 +584,32 @@ async fn mostrar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>) -> Resu
         ..Default::default()
     };
     room.local_participant().publish_track(LocalTrack::Video(faixa.clone()), publicar).await.map_err(|e| format!("Não consegui mostrar a tela ({e})."))?;
+    if log {
+        // o que o codificador fez e o que saiu pela rede, a cada 2 s, enquanto a faixa existir
+        let f2 = faixa.clone();
+        let est = estado.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                if !est.lock().is_ok_and(|e| e.tela) {
+                    break;
+                }
+                match f2.get_stats().await {
+                    Ok(v) => {
+                        for st in v {
+                            if let livekit::webrtc::stats::RtcStats::OutboundRtp(o) = st {
+                                eprintln!(
+                                    "[voz] tela enviada: {}x{} {:.0} fps, codificados {}, enviados {}, {} KB, limite {:?}",
+                                    o.outbound.frame_width, o.outbound.frame_height, o.outbound.frames_per_second, o.outbound.frames_encoded, o.outbound.frames_sent, o.sent.bytes_sent / 1024, o.outbound.quality_limitation_reason
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => eprintln!("[voz] tela: sem estatística ({e})"),
+                }
+            }
+        });
+    }
     Ok((faixa, parar_tx))
 }
 
