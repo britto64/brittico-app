@@ -7,27 +7,24 @@ use crate::perfil::ajustes::{self, Btn};
 use crate::theme::*;
 use crate::ui::{self, mix, text, text_width};
 use crate::ic;
+use olheiro_motor::som::{self, Controles, Mistura, MisturaRef, Som, QUADRO, TAXA};
+use std::sync::Arc;
 use eframe::egui::{self, Align2, Color32, CursorIcon, ImageSource, Order, Pos2, Rect, Sense, Stroke, StrokeKind, UiBuilder, Vec2};
 
-const ABAS: [(&str, &str); 5] = [("voz", "Voz e vídeo"), ("atalhos", "Atalhos"), ("aparencia", "Aparência"), ("app", "O app"), ("sobre", "Sobre")];
-const MICS: [&str; 3] = ["Padrão do sistema", "Microfone (HyperX Cloud II)", "Webcam C920 (microfone)"];
-const SAIDAS: [&str; 3] = ["Padrão do sistema", "Fone (HyperX Cloud II)", "Alto-falantes (Realtek)"];
-const CAMS: [&str; 2] = ["Webcam C920", "OBS Virtual Camera"];
+const ABAS: [(&str, &str); 5] = [("voz", "Voz"), ("atalhos", "Atalhos"), ("aparencia", "Aparência"), ("app", "O app"), ("sobre", "Sobre")];
 
 pub struct ConfigState {
     aba: usize,
+    /// Os aparelhos que o sistema tem (o primeiro de cada lista é "Padrão do sistema", nome vazio) e o escolhido.
+    mics: Vec<String>,
+    saidas: Vec<String>,
     mic: usize,
     saida: usize,
-    cam: usize,
-    /// A lista aberta de um dos seletores (0 microfone, 1 saída, 2 câmera).
+    lidos: bool,
+    /// A lista aberta de um dos seletores (0 microfone, 1 saída).
     lista: Option<usize>,
-    testando_mic: bool,
-    vendo_cam: bool,
-    ruido: bool,
-    eco: bool,
-    volume_auto: bool,
-    apertar: bool,
-    sensibilidade: f32,
+    /// O microfone aberto de verdade só para mostrar o nível (e o som de teste da saída).
+    teste: Option<Teste>,
     iniciar: bool,
     bandeja: bool,
     avisos: bool,
@@ -40,17 +37,13 @@ impl Default for ConfigState {
     fn default() -> Self {
         Self {
             aba: 0,
-            mic: 1,
-            saida: 1,
-            cam: 0,
+            mics: vec![],
+            saidas: vec![],
+            mic: 0,
+            saida: 0,
+            lidos: false,
             lista: None,
-            testando_mic: false,
-            vendo_cam: false,
-            ruido: true,
-            eco: true,
-            volume_auto: true,
-            apertar: false,
-            sensibilidade: 0.35,
+            teste: None,
             iniciar: false,
             bandeja: true,
             avisos: true,
@@ -114,10 +107,10 @@ pub fn show(ui: &mut egui::Ui, st: &mut ConfigState, perfil: &mut crate::perfil:
         let x = main.center().x - inner / 2.0 + 24.0;
         let w = inner - 48.0;
         let h = match st.aba {
-            0 => 730.0,
-            1 => 120.0 + 7.0 * 44.0 + 24.0,
+            0 => 450.0,
+            1 => 120.0 + 5.0 * 44.0 + 24.0,
             2 => 513.0,
-            3 => 120.0 + 5.0 * 58.0 + 20.0,
+            3 => 120.0 + 58.0 + 20.0,
             _ => 330.0,
         };
         let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 24.0 + h + 90.0), Sense::hover());
@@ -127,20 +120,20 @@ pub fn show(ui: &mut egui::Ui, st: &mut ConfigState, perfil: &mut crate::perfil:
             1 => atalhos(ui, x, top, w),
             2 => ajustes::preferencias(ui, perfil, x, top, w, t),
             3 => app(ui, st, x, top, w),
-            _ => sobre(ui, st, x, top, w, t),
+            _ => sobre(ui, x, top, w),
         }
     });
     st.toast.show(ui, t);
 }
 
 /// Um seletor (`<select>`): a caixa com o nome do escolhido e a seta; o clique abre a lista por cima.
-fn seletor(ui: &egui::Ui, st: &mut ConfigState, k: usize, r: Rect, opcoes: &[&str], atual: usize) -> Option<usize> {
+fn seletor(ui: &egui::Ui, st: &mut ConfigState, k: usize, r: Rect, opcoes: &[String], atual: usize) -> Option<usize> {
     let p = ui.painter();
     let resp = ui.interact(r, ui.id().with(("cfg-sel", k)), Sense::click()).on_hover_cursor(CursorIcon::PointingHand);
     let aberto = st.lista == Some(k);
     p.rect_filled(r, R_MD(), CREAM_0());
     p.rect_stroke(r, R_MD(), Stroke::new(1.0_f32, if aberto || resp.hovered() { SECONDARY() } else { HAIRLINE_2() }), StrokeKind::Inside);
-    ui::clip(p, Pos2::new(r.left() + 14.0, r.center().y), Align2::LEFT_CENTER, opcoes[atual], f6(14.0), INK(), r.width() - 44.0);
+    ui::clip(p, Pos2::new(r.left() + 14.0, r.center().y), Align2::LEFT_CENTER, &opcoes[atual], f6(14.0), INK(), r.width() - 44.0);
     ui::icon(ui, if aberto { ic!("chevron-up") } else { ic!("chevron-down") }, Pos2::new(r.right() - 18.0, r.center().y), 14.0, FAINT());
     if resp.clicked() {
         st.lista = if aberto { None } else { Some(k) };
@@ -164,7 +157,7 @@ fn seletor(ui: &egui::Ui, st: &mut ConfigState, k: usize, r: Rect, opcoes: &[&st
             } else if ir.hovered() {
                 p.rect_filled(it, R_SM(), CREAM_2());
             }
-            text(p, Pos2::new(it.left() + 10.0, it.center().y), Align2::LEFT_CENTER, o, f6(13.5), if i == atual { SECONDARY() } else { INK() }, 0.0);
+            text(p, Pos2::new(it.left() + 10.0, it.center().y), Align2::LEFT_CENTER, &o, f6(13.5), if i == atual { SECONDARY() } else { INK() }, 0.0);
             if i == atual {
                 ui::icon(ui, ic!("check"), Pos2::new(it.right() - 16.0, it.center().y), 14.0, SECONDARY());
             }
@@ -198,109 +191,159 @@ fn chave(ui: &egui::Ui, x: f32, y: f32, w: f32, id: &str, titulo: &str, desc: &s
     h
 }
 
+/// O teste da aba de voz: o som aberto com o aparelho escolhido. O microfone só anda o medidor; a saída toca um tom.
+struct Teste {
+    _som: Option<Som>,
+    ctl: Arc<Controles>,
+    mistura: MisturaRef,
+    erro: Option<String>,
+    tom_ate: f64,
+    tom_n: usize,
+}
+
+fn arquivo() -> std::path::PathBuf {
+    crate::net::dir().join("audio")
+}
+
+/// Os aparelhos que o usuário escolheu (microfone, saída); vazio = o padrão do sistema. Lido na hora de entrar numa call.
+pub fn escolhidos() -> (String, String) {
+    let s = std::fs::read_to_string(arquivo()).unwrap_or_default();
+    let mut l = s.lines();
+    (l.next().unwrap_or("").to_owned(), l.next().unwrap_or("").to_owned())
+}
+
+impl ConfigState {
+    fn ler_aparelhos(&mut self) {
+        let (m, s) = som::aparelhos();
+        let (em, es) = escolhidos();
+        self.mics = std::iter::once(String::new()).chain(m).collect();
+        self.saidas = std::iter::once(String::new()).chain(s).collect();
+        self.mic = self.mics.iter().position(|n| *n == em).unwrap_or(0);
+        self.saida = self.saidas.iter().position(|n| *n == es).unwrap_or(0);
+        self.lidos = true;
+    }
+    fn guardar(&self) {
+        let _ = std::fs::create_dir_all(crate::net::dir());
+        let _ = std::fs::write(arquivo(), format!("{}\n{}\n", self.mics.get(self.mic).cloned().unwrap_or_default(), self.saidas.get(self.saida).cloned().unwrap_or_default()));
+    }
+    fn abrir_teste(&mut self, saida: bool) {
+        self.teste = None;
+        let ctl = Controles::novos();
+        let mistura = Mistura::nova();
+        let (mic, sai) = (self.mics.get(self.mic).cloned().unwrap_or_default(), self.saidas.get(self.saida).cloned().unwrap_or_default());
+        let (som, erro) = match Som::abrir(&mic, &sai, Some(mistura.clone()), ctl.clone()) {
+            Ok(s) => (Some(s), None),
+            Err(e) => (None, Some(e)),
+        };
+        self.teste = Some(Teste { _som: som, ctl, mistura, erro, tom_ate: 0.0, tom_n: 0 });
+        let _ = saida;
+    }
+}
+
 fn voz(ui: &mut egui::Ui, st: &mut ConfigState, x: f32, top: f32, w: f32, t: f64) {
+    if !st.lidos {
+        st.ler_aparelhos();
+    }
     let p = ui.painter().clone();
-    let cx = ajustes::card(&p, x, top, w, 730.0, "Voz e vídeo", "Os aparelhos e o som da Call. Valem para todas as salas, neste computador.");
+    let cx = ajustes::card(&p, x, top, w, 450.0, "Voz", "Os aparelhos da Call. Valem para todas as salas, neste computador, na próxima vez que você entrar numa.");
     let cw = w - 50.0;
     let bw = 120.0;
     let mut y = top + 119.3;
+    let nome = |lista: &[String], i: usize| -> String { if i == 0 || lista.get(i).is_none() { "Padrão do sistema".to_owned() } else { lista[i].clone() } };
+    let mics: Vec<String> = (0..st.mics.len()).map(|i| nome(&st.mics, i)).collect();
+    let saidas: Vec<String> = (0..st.saidas.len()).map(|i| nome(&st.saidas, i)).collect();
+    let testando = st.teste.is_some();
 
-    // microfone, com o medidor
+    // microfone, com o medidor de verdade
     ajustes::label(&p, cx, y, "Microfone");
     let sel = Rect::from_min_size(Pos2::new(cx, y + 24.0), Vec2::new(cw - bw - 10.0, 42.0));
     let b = Rect::from_min_size(Pos2::new(sel.right() + 10.0, sel.top() + 2.0), Vec2::new(bw, 38.0));
-    if ajustes::button(ui, b, "testar-mic", if st.testando_mic { "Parar" } else { "Testar" }, Btn::Contorno).clicked() {
-        st.testando_mic = !st.testando_mic;
+    if ajustes::button(ui, b, "testar-mic", if testando { "Parar" } else { "Testar" }, Btn::Contorno).clicked() {
+        if testando {
+            st.teste = None;
+        } else {
+            st.abrir_teste(false);
+        }
     }
     let medidor = Rect::from_min_size(Pos2::new(cx, sel.bottom() + 12.0), Vec2::new(cw, 8.0));
     p.rect_filled(medidor, 4.0, CREAM_2());
-    if st.testando_mic {
-        // a voz "pisca" no meio das palavras: um nível de mentira que sobe e desce
-        let nivel = (((t * 7.3).sin() * 0.5 + 0.5) * ((t * 2.1).sin() * 0.35 + 0.65)) as f32;
-        let corte = st.sensibilidade;
-        let cor = if nivel > corte { DIS_OK } else { FAINT() };
-        p.rect_filled(Rect::from_min_size(medidor.min, Vec2::new(medidor.width() * nivel, 8.0)), 4.0, cor);
+    let mut dica = "Aperte Testar para ver o nível do microfone.".to_owned();
+    if let Some(te) = &mut st.teste {
+        match &te.erro {
+            Some(e) => dica = e.clone(),
+            None => {
+                let nivel = (te.ctl.nivel_mic.get() * 4.0).clamp(0.0, 1.0);
+                te.ctl.nivel_mic.set(te.ctl.nivel_mic.get() * 0.9);
+                p.rect_filled(Rect::from_min_size(medidor.min, Vec2::new(medidor.width() * nivel, 8.0)), 4.0, if nivel > 0.08 { DIS_OK } else { FAINT() });
+                dica = "Fale alguma coisa: a barra sobe com a sua voz.".to_owned();
+            }
+        }
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
     }
-    p.rect_filled(Rect::from_center_size(Pos2::new(medidor.left() + medidor.width() * st.sensibilidade, medidor.center().y), Vec2::new(2.0, 14.0)), 0.0, SECONDARY());
-    ajustes::hint(&p, cx, medidor.bottom() + 6.0, cw, if st.testando_mic { "Fale alguma coisa: a barra fica verde quando passa da linha da sensibilidade." } else { "Aperte Testar para ver o nível do microfone." }, FAINT());
-    if let Some(i) = seletor(ui, st, 0, sel, &MICS, st.mic) {
+    ajustes::hint(&p, cx, medidor.bottom() + 6.0, cw, &dica, FAINT());
+    if let Some(i) = seletor(ui, st, 0, sel, &mics, st.mic) {
         st.mic = i;
+        st.guardar();
+        if st.teste.is_some() {
+            st.abrir_teste(false);
+        }
     }
     y = medidor.bottom() + 6.0 + 17.0 + 18.0;
 
-    // alto-falante
+    // alto-falante, com um tom de verdade
     ajustes::label(&p, cx, y, "Alto-falante");
     let sel = Rect::from_min_size(Pos2::new(cx, y + 24.0), Vec2::new(cw - bw - 10.0, 42.0));
     let b = Rect::from_min_size(Pos2::new(sel.right() + 10.0, sel.top() + 2.0), Vec2::new(bw, 38.0));
     if ajustes::button(ui, b, "testar-som", "Testar", Btn::Contorno).clicked() {
-        st.toast.say(&format!("Tocando o som de teste em \"{}\".", SAIDAS[st.saida]), t);
-    }
-    if let Some(i) = seletor(ui, st, 1, sel, &SAIDAS, st.saida) {
-        st.saida = i;
-    }
-    y += 24.0 + 42.0 + 20.0;
-
-    // câmera, com a prévia
-    ajustes::label(&p, cx, y, "Câmera");
-    let sel = Rect::from_min_size(Pos2::new(cx, y + 24.0), Vec2::new(cw - bw - 10.0, 42.0));
-    let b = Rect::from_min_size(Pos2::new(sel.right() + 10.0, sel.top() + 2.0), Vec2::new(bw, 38.0));
-    if ajustes::button(ui, b, "ver-cam", if st.vendo_cam { "Fechar" } else { "Ver" }, Btn::Contorno).clicked() {
-        st.vendo_cam = !st.vendo_cam;
-    }
-    if let Some(i) = seletor(ui, st, 2, sel, &CAMS, st.cam) {
-        st.cam = i;
-    }
-    y += 24.0 + 42.0 + 20.0;
-    if st.vendo_cam {
-        let prev = Rect::from_min_size(Pos2::new(cx + cw - 220.0, top + 24.0), Vec2::new(196.0, 110.0));
-        p.rect_filled(prev, R_SM(), Color32::from_rgb(11, 11, 12));
-        let hue = ui::hue_of("Kennzy");
-        p.rect_filled(prev.shrink(1.0), R_SM(), mix(ui::hsl(hue, 0.35, 0.30), Color32::BLACK, 0.7));
-        p.circle_filled(prev.center() - Vec2::new(0.0, 12.0), 18.0, ui::hsl(hue, 0.45, 0.62));
-        p.circle_filled(prev.center() + Vec2::new(0.0, 46.0), 38.0, ui::hsl(hue, 0.45, 0.62));
-        text(&p, prev.left_bottom() + Vec2::new(8.0, -10.0), Align2::LEFT_CENTER, "prévia (simulada)", f7(10.5), Color32::WHITE, 0.0);
-    }
-
-    // o som
-    p.rect_filled(Rect::from_min_size(Pos2::new(cx, y - 6.0), Vec2::new(cw, 1.0)), 0.0, HAIRLINE_2());
-    y += 10.0;
-    y += chave(ui, cx, y, cw, "ruido", "Supressão de ruído", "Tira o ventilador, o teclado e o barulho da rua da sua voz.", &mut st.ruido) + 16.0;
-    y += chave(ui, cx, y, cw, "eco", "Cancelamento de eco", "Evita que os outros se ouçam de volta quando você usa caixa de som.", &mut st.eco) + 16.0;
-    y += chave(ui, cx, y, cw, "agc", "Ajuste automático do volume", "Sobe a voz baixa e segura a alta, para todo mundo chegar parecido.", &mut st.volume_auto) + 16.0;
-    y += chave(ui, cx, y, cw, "apertar", "Apertar para falar", "O microfone só abre enquanto você segura a tecla (Ctrl). Desligado, ele abre sozinho quando você fala.", &mut st.apertar) + 18.0;
-
-    // a sensibilidade da detecção de voz
-    ajustes::label(&p, cx, y, if st.apertar { "Sensibilidade (sem efeito com apertar para falar)" } else { "Sensibilidade da detecção de voz" });
-    let trilho = Rect::from_min_size(Pos2::new(cx, y + 26.0), Vec2::new(cw, 18.0));
-    let resp = ui.interact(trilho, ui.id().with("cfg-sens"), Sense::click_and_drag()).on_hover_cursor(CursorIcon::PointingHand);
-    if let Some(q) = resp.interact_pointer_pos() {
-        if resp.dragged() || resp.clicked() {
-            st.sensibilidade = ((q.x - trilho.left()) / trilho.width()).clamp(0.05, 0.95);
+        if st.teste.is_none() {
+            st.abrir_teste(true);
+        }
+        if let Some(te) = &mut st.teste {
+            te.tom_ate = t + 1.0;
+            te.tom_n = 0;
         }
     }
-    let bar = Rect::from_center_size(trilho.center(), Vec2::new(trilho.width(), 6.0));
-    let a = if st.apertar { 0.4 } else { 1.0 };
-    p.rect_filled(bar, 3.0, CREAM_2());
-    p.rect_filled(Rect::from_min_size(bar.min, Vec2::new(bar.width() * st.sensibilidade, 6.0)), 3.0, SECONDARY().gamma_multiply(a));
-    p.circle_filled(Pos2::new(bar.left() + bar.width() * st.sensibilidade, bar.center().y), 9.0, if resp.hovered() || resp.dragged() { INK() } else { SOFT() });
-    text(&p, Pos2::new(cx, trilho.bottom() + 12.0), Align2::LEFT_CENTER, "mais sensível", f6(11.5), FAINT(), 0.0);
-    text(&p, Pos2::new(cx + cw, trilho.bottom() + 12.0), Align2::RIGHT_CENTER, "só voz alta", f6(11.5), FAINT(), 0.0);
+    if let Some(te) = &mut st.teste {
+        // um lá (440 Hz) baixinho, empurrado para a mistura enquanto o teste dura
+        if t < te.tom_ate {
+            if let Ok(mut m) = te.mistura.lock() {
+                for _ in 0..4 {
+                    let q: Vec<i16> = (0..QUADRO).map(|_| { te.tom_n += 1; ((te.tom_n as f32 * std::f32::consts::TAU * 440.0 / TAXA as f32).sin() * 5000.0) as i16 }).collect();
+                    m.chegou("teste", &q);
+                }
+            }
+            ui.ctx().request_repaint();
+        }
+    }
+    if let Some(i) = seletor(ui, st, 1, sel, &saidas, st.saida) {
+        st.saida = i;
+        st.guardar();
+        if st.teste.is_some() {
+            st.abrir_teste(true);
+        }
+    }
+    y += 24.0 + 42.0 + 20.0;
+
+    p.rect_filled(Rect::from_min_size(Pos2::new(cx, y - 6.0), Vec2::new(cw, 1.0)), 0.0, HAIRLINE_2());
+    ajustes::hint(&p, cx, y + 6.0, cw, "A voz sai já limpa: o app tira ruído, eco e acerta o volume sozinho, sem nada para ajustar.", FAINT());
+    ajustes::hint(&p, cx, y + 30.0, cw, "Câmera: ainda não existe no app (a tela você compartilha pelo botão da Call).", FAINT());
+    if ajustes::button(ui, Rect::from_min_size(Pos2::new(cx, y + 62.0), Vec2::new(ajustes::btn_w(&p, "Reler aparelhos"), 36.0)), "reler", "Reler aparelhos", Btn::Contorno).clicked() {
+        st.teste = None;
+        st.ler_aparelhos();
+    }
 }
 
 fn atalhos(ui: &mut egui::Ui, x: f32, top: f32, w: f32) {
     let p = ui.painter().clone();
-    let cx = ajustes::card(&p, x, top, w, 120.0 + 7.0 * 44.0 + 24.0, "Atalhos", "Valem dentro da call, quando você não está escrevendo uma mensagem.");
+    let cx = ajustes::card(&p, x, top, w, 120.0 + 5.0 * 44.0 + 24.0, "Atalhos", "Valem dentro da call, quando você não está escrevendo uma mensagem.");
     let cw = w - 50.0;
     let lista = [
         ("M", "Ligar e desligar o microfone"),
         ("D", "Parar de ouvir todo mundo (e voltar)"),
-        ("V", "Ligar e desligar a câmera"),
-        ("S", "Compartilhar a tela"),
+                ("S", "Compartilhar a tela"),
         ("I", "Mostrar as estatísticas dos vídeos"),
         ("Esc", "Sair da tela cheia e voltar para a grade"),
-        ("Ctrl", "Apertar para falar (quando ligado em Voz e vídeo)"),
-    ];
+            ];
     let mut y = top + 112.0;
     for (tecla, oque) in lista {
         let kw = text_width(&p, tecla, f8(12.0), 0.0) + 20.0;
@@ -310,7 +353,7 @@ fn atalhos(ui: &mut egui::Ui, x: f32, top: f32, w: f32) {
         text(&p, k.center(), Align2::CENTER_CENTER, tecla, f8(12.0), INK(), 0.0);
         text(&p, Pos2::new(cx + 70.0, k.center().y), Align2::LEFT_CENTER, oque, f6(14.0), SOFT(), 0.0);
         y += 44.0;
-        if y < top + 112.0 + 6.0 * 44.0 {
+        if y < top + 112.0 + 4.0 * 44.0 {
             p.rect_filled(Rect::from_min_size(Pos2::new(cx, y), Vec2::new(cw, 1.0)), 0.0, HAIRLINE_2());
         }
     }
@@ -318,13 +361,9 @@ fn atalhos(ui: &mut egui::Ui, x: f32, top: f32, w: f32) {
 
 fn app(ui: &mut egui::Ui, st: &mut ConfigState, x: f32, top: f32, w: f32) {
     let p = ui.painter().clone();
-    let cx = ajustes::card(&p, x, top, w, 120.0 + 5.0 * 58.0 + 20.0, "O app", "Como o Brittico se comporta neste computador.");
+    let cx = ajustes::card(&p, x, top, w, 120.0 + 58.0 + 20.0, "O app", "Como o Brittico se comporta neste computador.");
     let cw = w - 50.0;
-    let mut y = top + 119.3;
-    y += chave(ui, cx, y, cw, "iniciar", "Abrir junto com o computador", "O app já fica pronto na bandeja quando o computador liga, sem abrir a janela.", &mut st.iniciar) + 20.0;
-    y += chave(ui, cx, y, cw, "bandeja", "Fechar para a bandeja", "O X da janela esconde o app em vez de sair: a call continua e você volta pelo ícone perto do relógio.", &mut st.bandeja) + 20.0;
-    y += chave(ui, cx, y, cw, "avisos", "Avisar quando me chamarem", "Uma notificação do sistema quando alguém te marca ou te puxa para uma sala.", &mut st.avisos) + 20.0;
-    y += chave(ui, cx, y, cw, "retomar", "Abrir onde parei", "Volta para a última tela que estava aberta, em vez do Início.", &mut st.retomar) + 20.0;
+    let y = top + 119.3;
     chave(ui, cx, y, cw, "animacoes", "Animações", "As capas dos Jogos flutuando e os enfeites que se mexem. Desligar economiza processador em PC fraco.", &mut st.animacoes);
 }
 
@@ -336,14 +375,14 @@ fn memoria() -> Option<f64> {
     Some(kb / 1024.0)
 }
 
-fn sobre(ui: &mut egui::Ui, st: &mut ConfigState, x: f32, top: f32, w: f32, t: f64) {
+fn sobre(ui: &mut egui::Ui, x: f32, top: f32, w: f32) {
     let p = ui.painter().clone();
-    let cx = ajustes::card(&p, x, top, w, 330.0, "Sobre", "O Brittico como programa: o site, tela por tela, leve para rodar junto com o jogo.");
+    let cx = ajustes::card(&p, x, top, w, 330.0, "Sobre", "O Brittico como programa, leve para rodar junto com o jogo.");
     let mut y = top + 119.3;
     let linhas = [
-        ("Versão", format!("{} (protótipo de interface, com dados de mentira)", env!("CARGO_PKG_VERSION"))),
+        ("Versão", env!("CARGO_PKG_VERSION").to_owned()),
         ("Memória própria", memoria().map(|m| format!("{m:.0} MB")).unwrap_or_else(|| "—".into())),
-        ("Servidor", "desligado: nada sai deste computador".to_owned()),
+        ("Servidor", crate::net::api().to_owned()),
     ];
     for (k, v) in linhas {
         text(&p, Pos2::new(cx, y + 10.0), Align2::LEFT_CENTER, k, f7(13.0), INK(), 0.0);
@@ -354,9 +393,5 @@ fn sobre(ui: &mut egui::Ui, st: &mut ConfigState, x: f32, top: f32, w: f32, t: f
     let b1 = Rect::from_min_size(Pos2::new(cx, y + 14.0), Vec2::new(ajustes::btn_w(&p, "Abrir o site"), 36.0));
     if ajustes::button(ui, b1, "site", "Abrir o site", Btn::Cheio).clicked() {
         ui.ctx().open_url(egui::OpenUrl::new_tab("https://brittico.xyz"));
-    }
-    let b2 = Rect::from_min_size(Pos2::new(b1.right() + 10.0, y + 14.0), Vec2::new(ajustes::btn_w(&p, "Procurar atualização"), 36.0));
-    if ajustes::button(ui, b2, "atualizar", "Procurar atualização", Btn::Contorno).clicked() {
-        st.toast.say("Você já está na versão mais nova.", t);
     }
 }

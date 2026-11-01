@@ -161,6 +161,18 @@ async fn rodar(token_path: String, entrada: Option<(String, String)>, mic: Strin
         faixa.mute();
     }
     let rt = tokio::runtime::Handle::current();
+    if std::env::var("BRITTICO_VOZ_LOG").is_ok() {
+        // teste: o que a sala tem e o que chega, uma vez por segundo
+        let (m, c, est) = (mistura.clone(), ctl.clone(), estado.clone());
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                let q = m.lock().map(|m| m.quadro()).unwrap_or_default();
+                let vids: Vec<_> = est.lock().map(|e| e.videos.iter().map(|(k, q)| (*k, q.w, q.h, q.n)).collect()).unwrap_or_default();
+                eprintln!("[voz] mic={:.3} chegando={:?} videos={:?}", c.nivel_mic.get(), q, vids);
+            }
+        });
+    }
     if let Ok(mut d) = ctl.destino.lock() {
         let fonte = fonte.clone();
         *d = Some(Box::new(move |q: &[i16]| {
@@ -171,6 +183,12 @@ async fn rodar(token_path: String, entrada: Option<(String, String)>, mic: Strin
     mudar(&|s| s.conexao = Conexao::Dentro);
 
     let mut tela: Option<(LocalVideoTrack, std::sync::mpsc::SyncSender<()>)> = None;
+    if std::env::var("BRITTICO_VOZ_TELA").is_ok() {
+        match mostrar_tela(&room).await {
+            Ok(t) => { tela = Some(t); mudar(&|s| s.tela = true); }
+            Err(e) => eprintln!("[voz] tela: {e}"),
+        }
+    }
     loop {
         tokio::select! {
             ev = eventos.recv() => {
@@ -282,7 +300,10 @@ async fn rodar(token_path: String, entrada: Option<(String, String)>, mic: Strin
 /// manda quadros BGRA, que viram I420 e saem por uma faixa de vídeo `Screenshare`.
 async fn mostrar_tela(room: &Room) -> Result<(LocalVideoTrack, std::sync::mpsc::SyncSender<()>), String> {
     use livekit::webrtc::desktop_capturer::{DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions};
-    let tipo = if cfg!(target_os = "linux") && std::env::var("WAYLAND_DISPLAY").is_ok() { DesktopCaptureSourceType::Generic } else { DesktopCaptureSourceType::Screen };
+    #[cfg(target_os = "linux")]
+    let tipo = if std::env::var("WAYLAND_DISPLAY").is_ok() { DesktopCaptureSourceType::Generic } else { DesktopCaptureSourceType::Screen };
+    #[cfg(not(target_os = "linux"))]
+    let tipo = DesktopCaptureSourceType::Screen;
     let mut opcoes = DesktopCapturerOptions::new(tipo);
     opcoes.set_include_cursor(true);
     let fonte = NativeVideoSource::new(VideoResolution { width: 1920, height: 1080 }, true);

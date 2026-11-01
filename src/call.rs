@@ -89,6 +89,7 @@ pub struct CallState {
     /// As texturas do vídeo que chega: (pessoa, tela?) → textura e o número do último quadro subido.
     videos: HashMap<(i64, bool), (egui::TextureHandle, u64, Vec2)>,
     /// Os aparelhos escolhidos nas Configurações (nome; vazio = o padrão do sistema).
+    pub auto_entrou: bool,
     pub mic_nome: String,
     pub saida_nome: String,
     /// Quando mandou o último "digitando".
@@ -143,6 +144,7 @@ impl Default for CallState {
             pedir_entrar: None,
             link_convite: None,
             link_rx: None,
+            auto_entrou: false,
         }
     }
 }
@@ -341,7 +343,7 @@ impl CallState {
         }
         self.sair_da_voz();
         let path = format!("/api/diskenzy/v2/voice/{id}/token");
-        self.voz = Some(voz::entrar(ctx, id, path, entrada, self.mic_nome.clone(), self.saida_nome.clone(), !self.muted && !self.deafened));
+        self.voz = Some(voz::entrar(ctx, id, path, entrada, crate::config::escolhidos().0, crate::config::escolhidos().1, !self.muted && !self.deafened));
         if let Some(v) = &self.voz {
             if self.deafened {
                 v.mandar(voz::Cmd::Surdo(true));
@@ -477,7 +479,7 @@ impl CallState {
         }
         let sala = self.sala_id();
         let path = format!("/api/diskenzy/v2/rooms/{sala}/presidential/token");
-        self.presi = Some(voz::entrar(ctx, format!("presidencial:{sala}"), path, None, self.mic_nome.clone(), self.saida_nome.clone(), !self.muted && !self.deafened));
+        self.presi = Some(voz::entrar(ctx, format!("presidencial:{sala}"), path, None, crate::config::escolhidos().0, crate::config::escolhidos().1, !self.muted && !self.deafened));
     }
 }
 
@@ -485,6 +487,17 @@ pub fn show(ui: &mut egui::Ui, st: &mut CallState, body: Rect, t: f64, geracao: 
     st.passo(ui.ctx(), geracao, t);
     if let Some(ch) = st.pedir_entrar.take() {
         st.entrar_com(ui.ctx(), ch, None);
+    }
+    // para testar com duas cópias: BRITTICO_ENTRAR=<nome do canal> entra sozinho nele assim que a lista chega
+    if st.voz.is_none() {
+        if let Ok(nome) = std::env::var("BRITTICO_ENTRAR") {
+            if let Some(ch) = (0..60).find(|&i| { let c = dados::canal_ou(i); !c.id.is_empty() && c.name == nome }) {
+                if !st.auto_entrou {
+                    st.auto_entrou = true;
+                    st.entrar_com(ui.ctx(), ch, None);
+                }
+            }
+        }
     }
     if crate::conta::perfil_id() == 0 {
         text(ui.painter(), body.center(), Align2::CENTER_CENTER, "Conecte a conta para entrar na Call.", f6(14.0), FAINT(), 0.0);
