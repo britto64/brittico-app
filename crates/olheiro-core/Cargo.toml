@@ -1,0 +1,14 @@
+[package]
+name = "olheiro-core"
+description = "O núcleo do Olheiro: lê o minimapa do LoL e diz onde cada aliado está. Sem nada de sistema operacional."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+unicode-normalization = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }

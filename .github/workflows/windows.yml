@@ -17,27 +17,15 @@ jobs:
   exe:
     runs-on: windows-latest
     steps:
-      # o app procura o motor de voz em ../olheiro-voz: o mesmo desenho de pastas do computador
       - uses: actions/checkout@v4
-        with:
-          path: 14.brittico-app/app
-      - uses: actions/checkout@v4
-        with:
-          repository: britto64/olheiro-voz
-          path: 14.brittico-app/olheiro-voz
-          token: ${{ secrets.OLHEIRO_VOZ_TOKEN || github.token }}
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: 14.brittico-app/app
 
       - name: Compilar
-        working-directory: 14.brittico-app/app
         run: cargo build --release --locked
 
       - name: SHA-256
-        working-directory: 14.brittico-app/app
         shell: pwsh
         run: |
           Copy-Item target/release/brittico.exe brittico.exe
@@ -46,19 +34,19 @@ jobs:
 
       - uses: actions/attest-build-provenance@v2
         with:
-          subject-path: 14.brittico-app/app/brittico.exe
+          subject-path: brittico.exe
 
       - uses: actions/upload-artifact@v4
         with:
           name: brittico-windows
           path: |
-            14.brittico-app/app/brittico.exe
-            14.brittico-app/app/brittico.exe.sha256
+            brittico.exe
+            brittico.exe.sha256
 
       - name: Publicar a Release (só em tag)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            14.brittico-app/app/brittico.exe
-            14.brittico-app/app/brittico.exe.sha256
+            brittico.exe
+            brittico.exe.sha256

@@ -3282,6 +3282,7 @@ dependencies = [
 name = "olheiro-core"
 version = "0.2.4"
 dependencies = [
+ "image",
  "serde",
  "serde_json",
  "unicode-normalization",

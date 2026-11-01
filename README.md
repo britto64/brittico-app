@@ -88,7 +88,7 @@ Medido em 2026-10-30, nos Jogos (as capas flutuam a 30 quadros por segundo): ~31
 
 ## LoL de proximidade (o Olheiro)
 
-O "L" da trilha abre uma **janela própria**, como a lista de amigos da Steam (`src/olheiro/`). Ela não tem ligação com a Call nem com a conta: quem trabalha é o `olheiro-motor`, do repositório `../olheiro-voz` (lê o LoL e o minimapa, entra sozinho na sala de voz da partida pelo porteiro, grava e toca a voz e ajusta o volume de cada um pela distância). Com ela aberta, o X da janela grande só esconde o Brittico (no Linux, minimiza); fechar a do Olheiro com a grande escondida fecha o app.
+O "L" da trilha abre uma **janela própria**, como a lista de amigos da Steam (`src/olheiro/`). Ela não tem ligação com a Call nem com a conta: quem trabalha é o `olheiro-motor`, que mora aqui em `crates/` (lê o LoL e o minimapa, entra sozinho na sala de voz da partida pelo porteiro, grava e toca a voz e ajusta o volume de cada um pela distância). Com ela aberta, o X da janela grande só esconde o Brittico (no Linux, minimiza); fechar a do Olheiro com a grande escondida fecha o app.
 
 - O servidor de voz (porteiro) é o campo "Servidor de voz" dos Ajustes da janela, ou `OLHEIRO_PORTEIRO`. Vazio: o mapa funciona, ninguém se ouve.
 - A janela: você no topo, a barra de voz, o time (clicar em alguém abre o volume e o mutar) e o minimapa embaixo. Abrir já liga. Para olhar sem o LoL: `BRITTICO_OLHEIRO=abrir | ajustes | simulada1..5` (e `BRITTICO_OLHEIRO_ABERTO=chave` já com o volume de alguém aberto). Duas cópias com `simulada1` e `simulada2`, `OLHEIRO_DIR` diferentes e o mesmo porteiro caem na mesma sala; `OLHEIRO_SOM=nao` ou `tom` não mexe no som do computador. `BRITTICO_OLHEIRO_ID` troca a classe da janela (para a regra do Hyprland).

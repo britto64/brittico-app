@@ -1,6 +1,15 @@
+[workspace]
+resolver = "2"
+members = [".", "crates/olheiro-core", "crates/olheiro-voz", "crates/olheiro-motor"]
+
+[workspace.package]
+version = "0.2.4"
+edition = "2021"
+publish = false
+
 [package]
 name = "brittico-app"
-description = "O Brittico como programa: o site (brittico.xyz) copiado tela por tela, hoje o Início e a Call. Protótipo só de interface, com dados de mentira."
+description = "O Brittico como programa: o site (brittico.xyz) tela por tela: Início, Jogos, LivePixel, Call com voz e tela, perfil e configurações."
 version = "0.1.0"
 edition = "2021"
 publish = false
@@ -27,8 +36,8 @@ tungstenite = { version = "0.29", default-features = false, features = ["handsha
 livekit = { version = "=0.9.6", default-features = false, features = ["native", "rustls-tls-webpki-roots"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
 futures-util = { version = "0.3", default-features = false }
-# o LoL de proximidade: o Olheiro inteiro (leitura do LoL, sala de voz, som), do repositório olheiro-voz ao lado
-olheiro-motor = { path = "../olheiro-voz/crates/olheiro-motor" }
+# o LoL de proximidade: o motor do Olheiro (leitura do LoL, sala de voz, som), agora dentro deste repositório (crates/)
+olheiro-motor = { path = "crates/olheiro-motor" }
 
 [profile.release]
 opt-level = 3

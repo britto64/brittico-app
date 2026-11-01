@@ -1,0 +1,11 @@
+[package]
+name = "olheiro-voz"
+description = "Regras compartilhadas da voz por proximidade: pacote de posições, fusão e curva de volume. Sem rede e sem segredo."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+unicode-normalization = "0.1"

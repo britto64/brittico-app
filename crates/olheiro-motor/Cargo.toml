@@ -1,0 +1,29 @@
+[package]
+name = "olheiro-motor"
+description = "O Olheiro sem janela: lê o LoL e o minimapa, entra na sala de voz da partida pelo porteiro, toca e grava a voz e ajusta o volume de cada um pela distância. Quem desenha a tela (o Brittico) só lê o estado e manda comandos."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+olheiro-core = { path = "../olheiro-core" }
+olheiro-voz = { path = "../olheiro-voz" }
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "3", default-features = false, features = ["native-tls"] }
+# a voz: a sala do LiveKit (rustls leva as raízes para o wss:// do servidor), o pedido ao porteiro e o som do PC
+livekit = { version = "0.9", default-features = false, features = ["native", "rustls-tls-webpki-roots"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
+futures-util = { version = "0.3", default-features = false }
+cpal = "0.15"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
