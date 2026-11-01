@@ -106,6 +106,7 @@ fn agente() -> &'static ureq::Agent {
     A.get_or_init(|| {
         ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(20)))
+            .tls_config(ureq::tls::TlsConfig::builder().provider(ureq::tls::TlsProvider::NativeTls).build())
             .http_status_as_error(false)
             .user_agent(concat!("BritticoApp/", env!("CARGO_PKG_VERSION")))
             .build()
