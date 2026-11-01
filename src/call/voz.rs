@@ -5,8 +5,9 @@
 //!
 //! Tudo roda num runtime do tokio numa thread própria; a tela manda `Cmd` e lê o `Estado`.
 
-use livekit::options::{DegradationPreference, TrackPublishOptions, VideoCodec, VideoEncoding};
+use livekit::options::{DegradationPreference, TrackPublishOptions, VideoCodec, VideoEncoding, VideoPreset};
 use livekit::prelude::*;
+use livekit::track::VideoQuality;
 use livekit::webrtc::audio_frame::AudioFrame;
 use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::audio_source::{AudioSourceOptions, RtcAudioSource};
@@ -46,6 +47,9 @@ pub struct Estado {
     pub videos: HashMap<(i64, bool), Quadro>,
     /// Mostrando a própria tela agora.
     pub tela: bool,
+    /// A camada que cada vídeo que chega deve ter (0 miniatura, 2 cheia): a cheia só para a tela selecionada (o mesmo
+    /// que o site faz).
+    pub qualidade: HashMap<(i64, bool), u8>,
     pub aviso: Option<String>,
 }
 
@@ -185,6 +189,12 @@ fn miniatura_de(bgra: &[u8], w: usize, h: usize, stride: usize) -> Option<(usize
     (!tudo_preto).then_some((mw, mh, out))
 }
 
+/// A camada extra da tela (a cheia é a da faixa), a mesma do site: só a tela selecionada vem em tempo real; as outras,
+/// na grade e na fileira do foco, recebem esta miniatura de 144p a 1 quadro por segundo (pedido dele, 2026-11-01).
+fn camadas(_modo: Modo, _fullhd: bool) -> Vec<VideoPreset> {
+    vec![VideoPreset { width: 256, height: 144, encoding: VideoEncoding { max_bitrate: 100_000, max_framerate: 1.0 } }]
+}
+
 /// A altura da tela que sai: HD (720p, o padrão) ou Full HD (1080p). Maior que isso é reduzido.
 fn altura(fullhd: bool) -> u32 {
     if fullhd {
@@ -223,6 +233,14 @@ impl Drop for Voz {
 impl Voz {
     pub fn mandar(&self, c: Cmd) {
         let _ = self.tx.send(c);
+    }
+
+    /// A camada deste vídeo: a cheia (tempo real) só para a tela selecionada; as outras, a miniatura de 1 quadro/s.
+    pub fn pedir_qualidade(&self, chave: (i64, bool), tempo_real: bool) {
+        let q = if tempo_real { 2 } else { 0 };
+        if let Ok(mut e) = self.estado.lock() {
+            e.qualidade.insert(chave, q);
+        }
     }
 
     pub fn conexao(&self) -> Conexao {
@@ -339,8 +357,26 @@ async fn rodar(token_path: String, entrada: Option<(String, String)>, mic: Strin
             Err(e) => eprintln!("[voz] tela: {e}"),
         }
     }
+    // as publicações de vídeo que chegam, para pedir a camada certa de cada uma
+    let mut publicacoes: HashMap<(i64, bool), RemoteTrackPublication> = HashMap::new();
+    let mut aplicada: HashMap<(i64, bool), u8> = HashMap::new();
+    let mut relogio = tokio::time::interval(std::time::Duration::from_millis(500));
     loop {
         tokio::select! {
+            _ = relogio.tick() => {
+                let pedidas: Vec<((i64, bool), u8)> = estado.lock().map(|e| e.qualidade.iter().map(|(k, v)| (*k, *v)).collect()).unwrap_or_default();
+                for (k, q) in pedidas {
+                    if aplicada.get(&k) == Some(&q) {
+                        continue;
+                    }
+                    if let Some(p) = publicacoes.get(&k) {
+                        if p.simulcasted() {
+                            p.set_video_quality(if q == 0 { VideoQuality::Low } else { VideoQuality::High });
+                            aplicada.insert(k, q);
+                        }
+                    }
+                }
+            }
             ev = eventos.recv() => {
                 let Some(ev) = ev else { break };
                 match ev {
@@ -361,6 +397,8 @@ async fn rodar(token_path: String, entrada: Option<(String, String)>, mic: Strin
                             RemoteTrack::Video(v) => {
                                 let id: i64 = k.parse().unwrap_or(0);
                                 let e_tela = publication.source() == TrackSource::Screenshare;
+                                publicacoes.insert((id, e_tela), publication.clone());
+                                aplicada.remove(&(id, e_tela));
                                 let (est, c) = (estado.clone(), ctx.clone());
                                 tokio::spawn(async move {
                                     let mut fluxo = NativeVideoStream::new(v.rtc_track());
@@ -388,7 +426,9 @@ async fn rodar(token_path: String, entrada: Option<(String, String)>, mic: Strin
                         let id: i64 = participant.identity().to_string().parse().unwrap_or(0);
                         if publication.kind() == TrackKind::Video {
                             let e_tela = publication.source() == TrackSource::Screenshare;
-                            mudar(&|s| { s.videos.remove(&(id, e_tela)); });
+                            publicacoes.remove(&(id, e_tela));
+                            aplicada.remove(&(id, e_tela));
+                            mudar(&|s| { s.videos.remove(&(id, e_tela)); s.qualidade.remove(&(id, e_tela)); });
                         }
                     }
                     RoomEvent::ParticipantDisconnected(p) => {
@@ -610,7 +650,11 @@ async fn mostrar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, fullhd:
             Ok("av1") => VideoCodec::AV1,
             _ => VideoCodec::VP8,
         },
-        simulcast: false,
+        // três camadas, como o site (`voice-presets.js`): a miniatura e a média saem junto com a cheia, e o servidor
+        // manda para cada pessoa a que cabe no quadro dela; na conta da porta da Contabo é o que faz caber 7 pessoas
+        // com 4 telas
+        simulcast: std::env::var("BRITTICO_TELA_SIMULCAST").map_or(true, |v| v != "0"),
+        simulcast_layers: Some(camadas(modo, fullhd)),
         video_encoding: Some(VideoEncoding { max_bitrate: modo.bitrate(), max_framerate: modo.fps() }),
         degradation_preference: Some(modo.degradar()),
         ..Default::default()
@@ -628,15 +672,54 @@ async fn mostrar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, fullhd:
                 }
                 match f2.get_stats().await {
                     Ok(v) => {
-                        for st in v {
-                            if let livekit::webrtc::stats::RtcStats::OutboundRtp(o) = st {
-                                eprintln!(
-                                    "[voz] tela enviada: {}x{} {:.0} fps, codificados {}, enviados {}, {} KB, limite {:?}, {:.1} ms por quadro, codificador {}",
-                                    o.outbound.frame_width, o.outbound.frame_height, o.outbound.frames_per_second, o.outbound.frames_encoded, o.outbound.frames_sent, o.sent.bytes_sent / 1024, o.outbound.quality_limitation_reason,
-                                    o.outbound.total_encode_time * 1000.0 / o.outbound.frames_encoded.max(1) as f64, o.outbound.encoder_implementation
-                                );
+                        use livekit::webrtc::stats::RtcStats;
+                        // por camada: tamanho, fps, o alvo que o controle de banda deu e o motivo do limite
+                        let mut camadas_txt = Vec::new();
+                        let (mut alvo, mut kb) = (0f64, 0u64);
+                        let mut ms = 0f64;
+                        let mut enc = String::new();
+                        let (mut rtt, mut perda) = (0f64, 0f64);
+                        let (mut estimativa, mut rtt_par) = (0f64, 0f64);
+                        for st in &v {
+                            match st {
+                                RtcStats::OutboundRtp(o) => {
+                                    camadas_txt.push(format!(
+                                        "{}:{}x{}@{:.0} {:?}",
+                                        if o.outbound.rid.is_empty() { "f" } else { o.outbound.rid.as_str() },
+                                        o.outbound.frame_width,
+                                        o.outbound.frame_height,
+                                        o.outbound.frames_per_second,
+                                        o.outbound.quality_limitation_reason
+                                    ));
+                                    alvo += o.outbound.target_bitrate;
+                                    kb += o.sent.bytes_sent / 1024;
+                                    ms = ms.max(o.outbound.total_encode_time * 1000.0 / o.outbound.frames_encoded.max(1) as f64);
+                                    enc = o.outbound.encoder_implementation.clone();
+                                }
+                                RtcStats::RemoteInboundRtp(r) => {
+                                    rtt = rtt.max(r.remote_inbound.round_trip_time);
+                                    perda = perda.max(r.remote_inbound.fraction_lost);
+                                }
+                                RtcStats::CandidatePair(c) if c.candidate_pair.nominated => {
+                                    estimativa = estimativa.max(c.candidate_pair.available_outgoing_bitrate);
+                                    rtt_par = rtt_par.max(c.candidate_pair.current_round_trip_time);
+                                }
+                                _ => {}
                             }
                         }
+                        camadas_txt.sort();
+                        eprintln!(
+                            "[voz] tela enviada: {} | alvo {:.1} Mbps, banda estimada {:.1} Mbps, ida e volta {:.0} ms (par {:.0} ms), perda {:.1}%, {} KB, {:.1} ms por quadro, {}",
+                            camadas_txt.join(" "),
+                            alvo / 1e6,
+                            estimativa / 1e6,
+                            rtt * 1000.0,
+                            rtt_par * 1000.0,
+                            perda * 100.0,
+                            kb,
+                            ms,
+                            enc
+                        );
                     }
                     Err(e) => eprintln!("[voz] tela: sem estatística ({e})"),
                 }

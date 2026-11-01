@@ -266,6 +266,19 @@ impl CallState {
                 None => i += 1,
             }
         }
+        // a camada de cada tela que chega: tempo real só a selecionada (em foco ou em tela cheia); as outras, na grade
+        // e na fileira (desenhadas ou não), a miniatura de 144p a 1 quadro por segundo
+        if let Some(v) = &self.voz {
+            let sel: Vec<i64> = [self.foco, self.quadro_cheio]
+                .into_iter()
+                .flatten()
+                .filter_map(|t| if let Tile::Screen(i) = t { Some(dados::pessoa(i).profile_id) } else { None })
+                .collect();
+            let telas: Vec<i64> = self.videos.keys().filter(|(_, tela)| *tela).map(|(id, _)| *id).collect();
+            for id in telas {
+                v.pedir_qualidade((id, true), sel.contains(&id));
+            }
+        }
         // a voz caiu ou não entrou: avisa e solta
         let falhou = self.voz.as_ref().and_then(|v| match v.conexao() {
             voz::Conexao::Falhou(e) => Some(e),
