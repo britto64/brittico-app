@@ -725,6 +725,8 @@ fn seletor(ui: &egui::Ui, j: &mut Janela, k: usize, r: Rect, opcoes: &[String], 
         p.rect_stroke(lr, R_MD(), Stroke::new(1.0_f32, HAIRLINE_2()), StrokeKind::Inside);
         let mut esc = None;
         egui::ScrollArea::vertical().max_height(alto - 16.0).show(ui, |ui| {
+            // o pincel de dentro da rolagem recorta no que se vê: o de fora deixava os itens vazarem da lista
+            let p = ui.painter().clone();
             ui.add_space(8.0);
             for (i, o) in todas.iter().enumerate() {
                 let (it, ir) = ui.allocate_exact_size(Vec2::new(lr.width() - 12.0, 32.0), Sense::click());

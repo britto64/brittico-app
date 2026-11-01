@@ -141,30 +141,37 @@ fn seletor(ui: &egui::Ui, st: &mut ConfigState, k: usize, r: Rect, opcoes: &[Str
     if !aberto {
         return None;
     }
-    let lr = Rect::from_min_size(r.left_bottom() + Vec2::new(0.0, 6.0), Vec2::new(r.width(), 8.0 + opcoes.len() as f32 * 36.0 + 8.0));
+    let alto = (8.0 + opcoes.len() as f32 * 36.0 + 8.0).min(280.0);
+    let lr = Rect::from_min_size(r.left_bottom() + Vec2::new(0.0, 6.0), Vec2::new(r.width(), alto));
     let esc = egui::Area::new(ui.id().with(("cfg-lista", k))).order(Order::Foreground).fixed_pos(lr.min).constrain(false).show(ui.ctx(), |ui| {
         ui.allocate_exact_size(lr.size(), Sense::click());
-        let p = ui.painter();
-        p.rect_filled(lr.translate(Vec2::new(0.0, 6.0)).expand(3.0), R_MD() + 3.0, Color32::from_black_alpha(50));
-        p.rect_filled(lr, R_MD(), CREAM_0());
-        p.rect_stroke(lr, R_MD(), Stroke::new(1.0_f32, HAIRLINE_2()), StrokeKind::Inside);
+        let fundo = ui.painter().clone();
+        fundo.rect_filled(lr.translate(Vec2::new(0.0, 6.0)).expand(3.0), R_MD() + 3.0, Color32::from_black_alpha(50));
+        fundo.rect_filled(lr, R_MD(), CREAM_0());
+        fundo.rect_stroke(lr, R_MD(), Stroke::new(1.0_f32, HAIRLINE_2()), StrokeKind::Inside);
         let mut esc = None;
-        for (i, o) in opcoes.iter().enumerate() {
-            let it = Rect::from_min_size(lr.min + Vec2::new(6.0, 8.0 + i as f32 * 36.0), Vec2::new(lr.width() - 12.0, 34.0));
-            let ir = ui.interact(it, ui.id().with(("cfg-op", k, i)), Sense::click()).on_hover_cursor(CursorIcon::PointingHand);
-            if i == atual {
-                p.rect_filled(it, R_SM(), AMBER_SOFT());
-            } else if ir.hovered() {
-                p.rect_filled(it, R_SM(), CREAM_2());
+        // a rolagem num filho com o tamanho da caixa; o pincel de dentro dela recorta, então nada vaza da lista
+        let mut filho = ui.new_child(UiBuilder::new().max_rect(lr.shrink2(Vec2::new(0.0, 8.0))));
+        egui::ScrollArea::vertical().id_salt(("cfg-rol", k)).max_height(alto - 16.0).show(&mut filho, |ui| {
+            let p = ui.painter().clone();
+            for (i, o) in opcoes.iter().enumerate() {
+                let it = Rect::from_min_size(Pos2::new(lr.left() + 6.0, ui.cursor().top()), Vec2::new(lr.width() - 12.0, 34.0));
+                ui.allocate_exact_size(Vec2::new(lr.width() - 12.0, 36.0), Sense::hover());
+                let ir = ui.interact(it, ui.id().with(("cfg-op", k, i)), Sense::click()).on_hover_cursor(CursorIcon::PointingHand);
+                if i == atual {
+                    p.rect_filled(it, R_SM(), AMBER_SOFT());
+                } else if ir.hovered() {
+                    p.rect_filled(it, R_SM(), CREAM_2());
+                }
+                ui::clip(&p, Pos2::new(it.left() + 10.0, it.center().y), Align2::LEFT_CENTER, o, f6(13.5), if i == atual { SECONDARY() } else { INK() }, it.width() - 40.0);
+                if i == atual {
+                    ui::icon(ui, ic!("check"), Pos2::new(it.right() - 16.0, it.center().y), 14.0, SECONDARY());
+                }
+                if ir.clicked() {
+                    esc = Some(i);
+                }
             }
-            text(p, Pos2::new(it.left() + 10.0, it.center().y), Align2::LEFT_CENTER, &o, f6(13.5), if i == atual { SECONDARY() } else { INK() }, 0.0);
-            if i == atual {
-                ui::icon(ui, ic!("check"), Pos2::new(it.right() - 16.0, it.center().y), 14.0, SECONDARY());
-            }
-            if ir.clicked() {
-                esc = Some(i);
-            }
-        }
+        });
         esc
     });
     if esc.inner.is_some() || (ui.input(|i| i.pointer.any_pressed()) && !ui.input(|i| i.pointer.interact_pos()).is_some_and(|q| lr.contains(q) || r.contains(q))) {
