@@ -67,18 +67,26 @@ impl Modo {
             Modo::Fluidez => 60.0,
         }
     }
-    /// O teto de bitrate (bits por segundo).
+    /// O teto de bitrate (bits por segundo): 12 Mbps (pedido dele, 2026-11-01). Na conta da porta de 200 Mbps da
+    /// Contabo, 5 pessoas com 3 telas usam ~144 Mbps; 7 com 4 telas passariam (ver a memória do app).
     fn bitrate(self) -> u64 {
-        match self {
-            // 8 Mbps é o teto do plano do servidor (o mesmo do site, `voice-presets.js`)
-            Modo::Qualidade => 8_000_000,
-            Modo::Fluidez => 8_000_000,
-        }
+        12_000_000
     }
+    /// O que ceder quando os bits não bastam. Atenção: os nomes seguem o WebRTC (`MaintainFramerate` = segura os
+    /// quadros e baixa a resolução), ao contrário do que dizem os comentários da crate libwebrtc.
+    /// - Fluidez (o LoL, movimento o tempo todo): segura os quadros E a resolução; só a nitidez cede até caber no teto.
+    /// - Qualidade: segura a resolução; os quadros por segundo cedem.
     fn degradar(self) -> DegradationPreference {
+        match std::env::var("BRITTICO_TELA_DEGRADAR").as_deref() {
+            Ok("res") => return DegradationPreference::MaintainFramerate,
+            Ok("fps") => return DegradationPreference::MaintainResolution,
+            Ok("equilibrio") => return DegradationPreference::Balanced,
+            Ok("nada") => return DegradationPreference::MaintainFramerateAndResolution,
+            _ => {}
+        }
         match self {
             Modo::Qualidade => DegradationPreference::MaintainResolution,
-            Modo::Fluidez => DegradationPreference::MaintainFramerate,
+            Modo::Fluidez => DegradationPreference::MaintainFramerateAndResolution,
         }
     }
 }
@@ -177,15 +185,22 @@ fn miniatura_de(bgra: &[u8], w: usize, h: usize, stride: usize) -> Option<(usize
     (!tudo_preto).then_some((mw, mh, out))
 }
 
-/// A altura máxima da tela que sai: maior que isso (um monitor 1440p ou 4K) é reduzido para 1080p.
-const ALTURA_MAX: u32 = 1080;
+/// A altura da tela que sai: HD (720p, o padrão) ou Full HD (1080p). Maior que isso é reduzido.
+fn altura(fullhd: bool) -> u32 {
+    if fullhd {
+        1080
+    } else {
+        720
+    }
+}
 
 pub enum Cmd {
     Mic(bool),
     Surdo(bool),
     /// Mostrar a tela no modo dado (e a tela ou janela escolhida no seletor do app; `None` = o seletor do sistema no
     /// Wayland), ou parar (`None`).
-    Tela(Option<(Modo, Option<Escolha>)>),
+    /// O `bool` é o Full HD (1080p; sem ele, HD 720p).
+    Tela(Option<(Modo, Option<Escolha>, bool)>),
     Volume(i64, f32),
     Sair,
 }
@@ -318,7 +333,8 @@ async fn rodar(token_path: String, entrada: Option<(String, String)>, mic: Strin
     let mut tela: Option<(LocalVideoTrack, std::sync::mpsc::SyncSender<()>)> = None;
     if std::env::var("BRITTICO_VOZ_TELA").is_ok() {
         let modo = if std::env::var("BRITTICO_VOZ_TELA").is_ok_and(|v| v == "fluidez") { Modo::Fluidez } else { Modo::Qualidade };
-        match mostrar_tela(&room, modo, None, &estado, &ctx).await {
+        let fullhd = std::env::var("BRITTICO_TELA_FULLHD").is_ok();
+        match mostrar_tela(&room, modo, None, fullhd, &estado, &ctx).await {
             Ok(t) => { tela = Some(t); mudar(&|s| s.tela = true); }
             Err(e) => eprintln!("[voz] tela: {e}"),
         }
@@ -398,8 +414,8 @@ async fn rodar(token_path: String, entrada: Option<(String, String)>, mic: Strin
                     Some(Cmd::Mic(aberto)) => if aberto { faixa.unmute() } else { faixa.mute() },
                     Some(Cmd::Surdo(s)) => if let Ok(mut m) = mistura.lock() { m.surdo = s },
                     Some(Cmd::Volume(id, v)) => if let Ok(mut m) = mistura.lock() { m.alvo(&id.to_string(), v); m.alvo(&format!("{id}:tela"), v) },
-                    Some(Cmd::Tela(Some((modo, escolha)))) if tela.is_none() => {
-                        match mostrar_tela(&room, modo, escolha, &estado, &ctx).await {
+                    Some(Cmd::Tela(Some((modo, escolha, fullhd)))) if tela.is_none() => {
+                        match mostrar_tela(&room, modo, escolha, fullhd, &estado, &ctx).await {
                             Ok(t) => { tela = Some(t); mudar(&|s| s.tela = true); }
                             Err(e) => mudar(&|s| { s.tela = false; s.aviso = Some(e.clone()); }),
                         }
@@ -434,7 +450,7 @@ async fn rodar(token_path: String, entrada: Option<(String, String)>, mic: Strin
 /// Mostra a tela: o capturador do libwebrtc (no Windows a tela inteira; no Linux com Wayland o seletor do sistema)
 /// manda quadros BGRA, que viram I420 (no máximo 1080p) e saem por uma faixa de vídeo `Screenshare` no ritmo, no bitrate
 /// e com a preferência do `modo`.
-async fn mostrar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, estado: &Arc<Mutex<Estado>>, ctx: &eframe::egui::Context) -> Result<(LocalVideoTrack, std::sync::mpsc::SyncSender<()>), String> {
+async fn mostrar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, fullhd: bool, estado: &Arc<Mutex<Estado>>, ctx: &eframe::egui::Context) -> Result<(LocalVideoTrack, std::sync::mpsc::SyncSender<()>), String> {
     // a prévia da própria tela (como no site): uma cópia pequena, ~10 por segundo, no quadro de quem mostra
     let eu: i64 = room.local_participant().identity().to_string().parse().unwrap_or(0);
     let (est_previa, ctx_previa) = (estado.clone(), ctx.clone());
@@ -454,10 +470,12 @@ async fn mostrar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, estado:
     };
     let mut opcoes = DesktopCapturerOptions::new(tipo);
     opcoes.set_include_cursor(true);
-    // para medir (BRITTICO_TELA_SCREENCAST=0|1 e BRITTICO_TELA_CODEC=vp8|h264|vp9|av1): o modo "conteúdo de tela" do
-    // libwebrtc e o codec
-    let screencast = std::env::var("BRITTICO_TELA_SCREENCAST").map_or(true, |v| v != "0");
-    let fonte = NativeVideoSource::new(VideoResolution { width: 1920, height: 1080 }, screencast);
+    // o modo "conteúdo de tela" do libwebrtc fica DESLIGADO: com movimento rápido ele descarta quadros de propósito e
+    // nem usa a banda que tem (medido: 2 a 4 fps com ~3 Mbps de 8). BRITTICO_TELA_SCREENCAST=1 e
+    // BRITTICO_TELA_CODEC=vp8|h264|vp9|av1 servem para medir.
+    let screencast = std::env::var("BRITTICO_TELA_SCREENCAST").is_ok_and(|v| v == "1");
+    let alt = altura(fullhd);
+    let fonte = NativeVideoSource::new(VideoResolution { width: alt * 16 / 9, height: alt }, screencast);
     let faixa = LocalVideoTrack::create_video_track("tela", RtcVideoSource::Native(fonte.clone()));
     let (parar_tx, parar_rx) = std::sync::mpsc::sync_channel::<()>(0);
     let (pronto_tx, pronto_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
@@ -470,7 +488,7 @@ async fn mostrar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, estado:
     if std::env::var("BRITTICO_TELA_TESTE").is_ok() {
         // BRITTICO_TELA_TESTE: no lugar da tela, uma de mentira com muito movimento (uma "janela" de textura arrastada
         // pela tela inteira), para medir o codificador sem depender do seletor nem do que está aberto
-        tela_de_teste(fonte.clone(), parar_rx, pronto_tx, intervalo);
+        tela_de_teste(fonte.clone(), parar_rx, pronto_tx, intervalo, alt);
     } else {
     std::thread::Builder::new()
         .name("call-tela".into())
@@ -509,9 +527,9 @@ async fn mostrar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, estado:
                 let (sy, su, sv) = buf.strides();
                 let (dy, du, dv) = buf.data_mut();
                 livekit::webrtc::native::yuv_helper::argb_to_i420(q.data(), q.stride(), dy, sy, du, su, dv, sv, w as i32, h as i32);
-                if h > ALTURA_MAX {
-                    let nw = ((w as u64 * ALTURA_MAX as u64 / h as u64) as i32) & !1;
-                    buf = buf.scale(nw, ALTURA_MAX as i32);
+                if h > alt {
+                    let nw = ((w as u64 * alt as u64 / h as u64) as i32) & !1;
+                    buf = buf.scale(nw, alt as i32);
                 }
                 if ultima_previa.elapsed() >= std::time::Duration::from_millis(100) {
                     ultima_previa = std::time::Instant::now();
@@ -613,8 +631,9 @@ async fn mostrar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, estado:
                         for st in v {
                             if let livekit::webrtc::stats::RtcStats::OutboundRtp(o) = st {
                                 eprintln!(
-                                    "[voz] tela enviada: {}x{} {:.0} fps, codificados {}, enviados {}, {} KB, limite {:?}",
-                                    o.outbound.frame_width, o.outbound.frame_height, o.outbound.frames_per_second, o.outbound.frames_encoded, o.outbound.frames_sent, o.sent.bytes_sent / 1024, o.outbound.quality_limitation_reason
+                                    "[voz] tela enviada: {}x{} {:.0} fps, codificados {}, enviados {}, {} KB, limite {:?}, {:.1} ms por quadro, codificador {}",
+                                    o.outbound.frame_width, o.outbound.frame_height, o.outbound.frames_per_second, o.outbound.frames_encoded, o.outbound.frames_sent, o.sent.bytes_sent / 1024, o.outbound.quality_limitation_reason,
+                                    o.outbound.total_encode_time * 1000.0 / o.outbound.frames_encoded.max(1) as f64, o.outbound.encoder_implementation
                                 );
                             }
                         }
@@ -640,7 +659,54 @@ fn _usado(c: &Controles) -> bool {
 
 /// A tela de mentira do `BRITTICO_TELA_TESTE`: um fundo com "texto" e uma janela de 900x600 de textura fina que corre
 /// pela tela a ~1500 px/s, em I420 direto (o custo fica todo no codificador).
-fn tela_de_teste(fonte: NativeVideoSource, parar_rx: std::sync::mpsc::Receiver<()>, pronto_tx: tokio::sync::oneshot::Sender<Result<(), String>>, intervalo: std::time::Duration) {
+fn tela_de_teste(fonte: NativeVideoSource, parar_rx: std::sync::mpsc::Receiver<()>, pronto_tx: tokio::sync::oneshot::Sender<Result<(), String>>, intervalo: std::time::Duration, alt: u32) {
+    // BRITTICO_TELA_TESTE=ffmpeg:<argumentos de entrada>: os quadros vêm de um ffmpeg (um vídeo, ou uma câmera
+    // passeando por uma imagem do LoL), em 1920x1080 I420
+    if let Some(args) = std::env::var("BRITTICO_TELA_TESTE").ok().and_then(|v| v.strip_prefix("ffmpeg:").map(str::to_owned)) {
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut filho = match std::process::Command::new("ffmpeg")
+                .args(["-v", "error"])
+                .args(args.split_whitespace())
+                .args(["-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", "1920x1080", "-"])
+                .stdout(std::process::Stdio::piped())
+                .spawn()
+            {
+                Ok(f) => f,
+                Err(e) => {
+                    let _ = pronto_tx.send(Err(format!("ffmpeg: {e}")));
+                    return;
+                }
+            };
+            let mut saida = filho.stdout.take().unwrap();
+            let _ = pronto_tx.send(Ok(()));
+            let (w, h) = (1920usize, 1080usize);
+            let mut cru = vec![0u8; w * h * 3 / 2];
+            while saida.read_exact(&mut cru).is_ok() {
+                if !matches!(parar_rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)) {
+                    break;
+                }
+                let mut buf = I420Buffer::new(w as u32, h as u32);
+                let (sy, su, sv) = buf.strides();
+                let (dy, du, dv) = buf.data_mut();
+                for y in 0..h {
+                    dy[y * sy as usize..y * sy as usize + w].copy_from_slice(&cru[y * w..y * w + w]);
+                }
+                let (cw, ch) = (w / 2, h / 2);
+                for y in 0..ch {
+                    du[y * su as usize..y * su as usize + cw].copy_from_slice(&cru[w * h + y * cw..w * h + y * cw + cw]);
+                    dv[y * sv as usize..y * sv as usize + cw].copy_from_slice(&cru[w * h * 5 / 4 + y * cw..w * h * 5 / 4 + y * cw + cw]);
+                }
+                if alt < h as u32 {
+                    buf = buf.scale((alt * 16 / 9) as i32 & !1, alt as i32);
+                }
+                fonte.capture_frame(&VideoFrame { rotation: VideoRotation::VideoRotation0, timestamp_us: 0, frame_metadata: None, buffer: buf });
+            }
+            let _ = filho.kill();
+        });
+        let _ = intervalo;
+        return;
+    }
     std::thread::spawn(move || {
         let (w, h) = (1920usize, 1080usize);
         let mut semente = 0x1234_5678u32;
@@ -677,6 +743,12 @@ fn tela_de_teste(fonte: NativeVideoSource, parar_rx: std::sync::mpsc::Receiver<(
                     250
                 };
                 janela[y * jw + x] = v;
+            }
+        }
+        if std::env::var("BRITTICO_TELA_TESTE").is_ok_and(|v| v == "ruido") {
+            // o pior caso: a janela de ruído puro, que não comprime
+            for v in janela.iter_mut() {
+                *v = (aleat() % 256) as u8;
             }
         }
         for y in 0..h {
@@ -716,6 +788,9 @@ fn tela_de_teste(fonte: NativeVideoSource, parar_rx: std::sync::mpsc::Receiver<(
             du.fill(128);
             dv.fill(128);
             let _ = (su, sv);
+            if alt < h as u32 {
+                buf = buf.scale((alt * 16 / 9) as i32 & !1, alt as i32);
+            }
             fonte.capture_frame(&VideoFrame { rotation: VideoRotation::VideoRotation0, timestamp_us: 0, frame_metadata: None, buffer: buf });
         }
     });

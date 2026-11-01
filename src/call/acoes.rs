@@ -87,9 +87,54 @@ fn menu(ui: &egui::Ui, id: &str, at: Pos2, w: f32, itens: &[(ImageSource<'static
     (out.inner, fora)
 }
 
-/// O menu de "Mostrar a tela": largura e altura (o título e duas linhas), para a barra saber onde pôr.
-pub(super) const TELA_MENU_W: f32 = 230.0;
-pub(super) const TELA_MENU_H: f32 = 8.0 + 28.0 + 2.0 * 36.0 + 8.0;
+/// O menu de "Mostrar a tela": largura e altura (o título, o Full HD e os dois modos), para a barra saber onde pôr.
+pub(super) const TELA_MENU_W: f32 = 240.0;
+pub(super) const TELA_MENU_H: f32 = 8.0 + 28.0 + 36.0 + 9.0 + 2.0 * 36.0 + 8.0;
+
+/// O menu de "Mostrar a tela": a chave do Full HD (fica aberto ao mexer) e os dois modos, que já começam.
+fn menu_tela(ui: &egui::Ui, at: Pos2, fullhd: &mut bool) -> (Option<voz::Modo>, bool) {
+    let (w, h) = (TELA_MENU_W, TELA_MENU_H);
+    let r = Rect::from_min_size(at, Vec2::new(w, h));
+    let out = egui::Area::new(ui.id().with("dz-menu-tela")).order(Order::Foreground).fixed_pos(r.min).constrain(false).show(ui.ctx(), |ui| {
+        ui.allocate_exact_size(r.size(), Sense::click());
+        let p = ui.painter();
+        p.rect_filled(r.translate(Vec2::new(0.0, 8.0)).expand(4.0), R_MD() + 4.0, Color32::from_black_alpha(60));
+        p.rect_filled(r, R_MD(), CREAM_0());
+        p.rect_stroke(r, R_MD(), Stroke::new(1.0_f32, HAIRLINE_2()), StrokeKind::Inside);
+        text(p, Pos2::new(r.left() + 16.0, r.top() + 22.0), Align2::LEFT_CENTER, "MOSTRAR A TELA", f8(10.0), FAINT(), 0.8);
+        // a chave do Full HD
+        let it = Rect::from_min_size(Pos2::new(r.left() + 6.0, r.top() + 36.0), Vec2::new(w - 12.0, 34.0));
+        let resp = ui.interact(it, ui.id().with("dz-tela-fullhd"), Sense::click()).on_hover_cursor(CursorIcon::PointingHand);
+        if resp.hovered() {
+            p.rect_filled(it, R_SM(), AMBER_SOFT());
+        }
+        text(p, Pos2::new(it.left() + 12.0, it.center().y), Align2::LEFT_CENTER, "Full HD · 1080p", f6(13.0), if resp.hovered() { INK() } else { SOFT() }, 0.0);
+        let chave = Rect::from_center_size(Pos2::new(it.right() - 26.0, it.center().y), Vec2::new(34.0, 20.0));
+        p.rect_filled(chave, 10.0, if *fullhd { SECONDARY() } else { CREAM_2() });
+        let bola = if *fullhd { chave.right() - 10.0 } else { chave.left() + 10.0 };
+        p.circle_filled(Pos2::new(bola, chave.center().y), 7.0, if *fullhd { ON_SECONDARY() } else { FAINT() });
+        if resp.clicked() {
+            *fullhd = !*fullhd;
+        }
+        p.rect_filled(Rect::from_min_size(Pos2::new(r.left() + 12.0, it.bottom() + 4.0), Vec2::new(w - 24.0, 1.0)), 0.0, HAIRLINE_2());
+        let mut esc = None;
+        for (i, (icone, label, modo)) in [(ic!("sparkle"), "Qualidade · 30 fps", voz::Modo::Qualidade), (ic!("bolt"), "Fluidez · 60 fps", voz::Modo::Fluidez)].into_iter().enumerate() {
+            let it = Rect::from_min_size(Pos2::new(r.left() + 6.0, it.bottom() + 9.0 + i as f32 * 36.0), Vec2::new(w - 12.0, 34.0));
+            let resp = ui.interact(it, ui.id().with(("dz-tela-modo", i)), Sense::click()).on_hover_cursor(CursorIcon::PointingHand);
+            if resp.hovered() {
+                p.rect_filled(it, R_SM(), AMBER_SOFT());
+            }
+            ui::icon(ui, icone, Pos2::new(it.left() + 12.0 + 7.5, it.center().y), 15.0, SECONDARY());
+            text(p, Pos2::new(it.left() + 40.0, it.center().y), Align2::LEFT_CENTER, label, f6(13.0), if resp.hovered() { INK() } else { SOFT() }, 0.0);
+            if resp.clicked() {
+                esc = Some(modo);
+            }
+        }
+        esc
+    });
+    let fora = ui.input(|i| i.pointer.any_pressed()) && !ui.input(|i| i.pointer.interact_pos()).is_some_and(|q| r.contains(q));
+    (out.inner, fora)
+}
 
 /// O cartão de uma pessoa (`.dz-card`): foto, nome, @, cargos, o estado e "Ver perfil".
 pub(super) fn cartao(ui: &egui::Ui, st: &mut CallState, body: Rect) {
@@ -222,10 +267,13 @@ pub(super) fn menus(ui: &egui::Ui, st: &mut CallState, t: f64) {
         }
     }
     if let Some(at) = st.tela_menu {
-        let itens = [(ic!("sparkle"), "Qualidade · 1080p", false), (ic!("bolt"), "Fluidez · 60 fps", false)];
-        let (esc, fora) = menu(ui, "tela", at, TELA_MENU_W, &itens, Some("Mostrar a tela"));
-        if let Some(i) = esc {
-            st.comecar_tela(ui.ctx(), if i == 0 { voz::Modo::Qualidade } else { voz::Modo::Fluidez });
+        let antes = st.tela_fullhd;
+        let (esc, fora) = menu_tela(ui, at, &mut st.tela_fullhd);
+        if st.tela_fullhd != antes {
+            let _ = std::fs::write(net::dir().join("tela"), if st.tela_fullhd { "1080" } else { "720" });
+        }
+        if let Some(modo) = esc {
+            st.comecar_tela(ui.ctx(), modo);
         }
         // o clique no próprio botão da tela já fecha o menu pela barra
         if esc.is_some() || (fora && !ui.input(|i| i.pointer.interact_pos()).is_some_and(|q| q.y > at.y + TELA_MENU_H)) {
@@ -580,10 +628,15 @@ pub(super) fn seletor_tela(ui: &egui::Ui, st: &mut CallState, body: Rect) {
         p.rect_filled(body, 0.0, Color32::from_black_alpha(150));
         p.rect_filled(r, R_LG(), CREAM_0());
         ui::bold(p, Pos2::new(r.left() + 24.0, r.top() + 34.0), Align2::LEFT_CENTER, "Mostrar a tela", patua(18.0), INK(), 0.0);
-        let modo = match st.tela_modo {
-            voz::Modo::Qualidade => "Qualidade · 1080p",
-            voz::Modo::Fluidez => "Fluidez · 60 fps",
-        };
+        let modo = format!(
+            "{} · {}",
+            match st.tela_modo {
+                voz::Modo::Qualidade => "Qualidade · 30 fps",
+                voz::Modo::Fluidez => "Fluidez · 60 fps",
+            },
+            if st.tela_fullhd { "1080p" } else { "720p" }
+        );
+        let modo = modo.as_str();
         text(p, Pos2::new(r.left() + 24.0, r.top() + 58.0), Align2::LEFT_CENTER, modo, f6(12.0), FAINT(), 0.0);
         let x = Rect::from_center_size(Pos2::new(r.right() - 30.0, r.top() + 34.0), Vec2::splat(30.0));
         let xr = ui.interact(x, ui.id().with("dz-seletor-x"), Sense::click()).on_hover_cursor(CursorIcon::PointingHand);
@@ -661,7 +714,7 @@ pub(super) fn seletor_tela(ui: &egui::Ui, st: &mut CallState, body: Rect) {
     });
     if let Some(e) = escolhida {
         if let Some(v) = &st.voz {
-            v.mandar(voz::Cmd::Tela(Some((st.tela_modo, Some(e)))));
+            v.mandar(voz::Cmd::Tela(Some((st.tela_modo, Some(e), st.tela_fullhd))));
         }
         fechar = true;
     }

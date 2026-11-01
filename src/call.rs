@@ -61,6 +61,8 @@ pub struct CallState {
     /// O menu de "Mostrar a tela" (Qualidade ou Fluidez) e o último modo escolhido (o da tecla S).
     tela_menu: Option<Pos2>,
     tela_modo: voz::Modo,
+    /// Mostrar a tela em Full HD (1080p) em vez de HD (720p, o padrão); guardado em `<pasta>/tela`.
+    tela_fullhd: bool,
     /// O seletor de tela do app (Windows e Linux em X11): as telas e janelas (carregando) e a aba aberta.
     seletor: Option<acoes::Seletor>,
     convite: Option<Convite>,
@@ -124,6 +126,7 @@ impl Default for CallState {
             lol_menu: None,
             tela_menu: None,
             tela_modo: voz::Modo::default(),
+            tela_fullhd: std::fs::read_to_string(net::dir().join("tela")).is_ok_and(|s| s.trim() == "1080"),
             seletor: None,
             convite: None,
             emotes_abertos: false,
@@ -175,7 +178,7 @@ impl CallState {
         self.tela_modo = modo;
         if voz::seletor_do_sistema() {
             if let Some(v) = &self.voz {
-                v.mandar(voz::Cmd::Tela(Some((modo, None))));
+                v.mandar(voz::Cmd::Tela(Some((modo, None, self.tela_fullhd))));
             }
         } else if self.voz.is_some() {
             self.seletor = Some(acoes::Seletor::abrir(ctx));
