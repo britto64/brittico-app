@@ -454,7 +454,10 @@ async fn mostrar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, estado:
     };
     let mut opcoes = DesktopCapturerOptions::new(tipo);
     opcoes.set_include_cursor(true);
-    let fonte = NativeVideoSource::new(VideoResolution { width: 1920, height: 1080 }, true);
+    // para medir (BRITTICO_TELA_SCREENCAST=0|1 e BRITTICO_TELA_CODEC=vp8|h264|vp9|av1): o modo "conteúdo de tela" do
+    // libwebrtc e o codec
+    let screencast = std::env::var("BRITTICO_TELA_SCREENCAST").map_or(true, |v| v != "0");
+    let fonte = NativeVideoSource::new(VideoResolution { width: 1920, height: 1080 }, screencast);
     let faixa = LocalVideoTrack::create_video_track("tela", RtcVideoSource::Native(fonte.clone()));
     let (parar_tx, parar_rx) = std::sync::mpsc::sync_channel::<()>(0);
     let (pronto_tx, pronto_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
@@ -464,6 +467,11 @@ async fn mostrar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, estado:
     let pelo_sistema = escolha.is_none() && seletor_do_sistema();
     // o capturador não pode mudar de thread: vive numa só, pedindo um quadro a cada 1/fps até a faixa sair
     let intervalo = std::time::Duration::from_secs_f64(1.0 / modo.fps());
+    if std::env::var("BRITTICO_TELA_TESTE").is_ok() {
+        // BRITTICO_TELA_TESTE: no lugar da tela, uma de mentira com muito movimento (uma "janela" de textura arrastada
+        // pela tela inteira), para medir o codificador sem depender do seletor nem do que está aberto
+        tela_de_teste(fonte.clone(), parar_rx, pronto_tx, intervalo);
+    } else {
     std::thread::Builder::new()
         .name("call-tela".into())
         .spawn(move || {
@@ -570,6 +578,7 @@ async fn mostrar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, estado:
             }
         })
         .map_err(|e| e.to_string())?;
+    }
     match pronto_rx.await {
         Ok(Ok(())) => {}
         Ok(Err(e)) => return Err(e),
@@ -577,7 +586,12 @@ async fn mostrar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, estado:
     }
     let publicar = TrackPublishOptions {
         source: TrackSource::Screenshare,
-        video_codec: VideoCodec::VP8,
+        video_codec: match std::env::var("BRITTICO_TELA_CODEC").as_deref() {
+            Ok("h264") => VideoCodec::H264,
+            Ok("vp9") => VideoCodec::VP9,
+            Ok("av1") => VideoCodec::AV1,
+            _ => VideoCodec::VP8,
+        },
         simulcast: false,
         video_encoding: Some(VideoEncoding { max_bitrate: modo.bitrate(), max_framerate: modo.fps() }),
         degradation_preference: Some(modo.degradar()),
@@ -622,4 +636,87 @@ pub fn sem_som() -> bool {
 #[allow(dead_code)]
 fn _usado(c: &Controles) -> bool {
     c.mudo.load(Ordering::Relaxed)
+}
+
+/// A tela de mentira do `BRITTICO_TELA_TESTE`: um fundo com "texto" e uma janela de 900x600 de textura fina que corre
+/// pela tela a ~1500 px/s, em I420 direto (o custo fica todo no codificador).
+fn tela_de_teste(fonte: NativeVideoSource, parar_rx: std::sync::mpsc::Receiver<()>, pronto_tx: tokio::sync::oneshot::Sender<Result<(), String>>, intervalo: std::time::Duration) {
+    std::thread::spawn(move || {
+        let (w, h) = (1920usize, 1080usize);
+        let mut semente = 0x1234_5678u32;
+        let mut aleat = move || {
+            semente ^= semente << 13;
+            semente ^= semente >> 17;
+            semente ^= semente << 5;
+            semente
+        };
+        // fundo: linhas de "texto" (traços claros e escuros)
+        let mut fundo = vec![235u8; w * h];
+        for y in 0..h {
+            if (y / 18) % 2 == 0 && y % 18 < 12 {
+                for x in 0..w {
+                    if aleat() % 3 == 0 {
+                        fundo[y * w + x] = 40;
+                    }
+                }
+            }
+        }
+        let (jw, jh) = (900usize, 600usize);
+        // a janela: barra de título, linhas de texto e um degradê (parecida com uma janela de verdade); o fundo ganha
+        // um degradê suave com um pouco de grão, como um papel de parede
+        let mut janela = vec![250u8; jw * jh];
+        for y in 0..jh {
+            for x in 0..jw {
+                let v = if y < 32 {
+                    60
+                } else if x > jw * 2 / 3 {
+                    (80 + (x * 120 / jw) as u32 + (y * 50 / jh) as u32) as u8
+                } else if (y / 16) % 2 == 0 && y % 16 < 10 && aleat() % 3 == 0 {
+                    30
+                } else {
+                    250
+                };
+                janela[y * jw + x] = v;
+            }
+        }
+        for y in 0..h {
+            for x in 0..w {
+                if fundo[y * w + x] == 235 {
+                    fundo[y * w + x] = (60 + (x * 90 / w) + (y * 60 / h)) as u8 + (aleat() % 6) as u8;
+                }
+            }
+        }
+        let _ = pronto_tx.send(Ok(()));
+        let mut t = 0f64;
+        let mut proximo = std::time::Instant::now();
+        loop {
+            proximo += intervalo;
+            let agora = std::time::Instant::now();
+            if proximo < agora {
+                proximo = agora;
+            }
+            match parar_rx.recv_timeout(proximo - agora) {
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                _ => break,
+            }
+            t += intervalo.as_secs_f64();
+            let x0 = ((t * 1.7).sin() * 0.5 + 0.5) * (w - jw) as f64;
+            let y0 = ((t * 2.3).cos() * 0.5 + 0.5) * (h - jh) as f64;
+            let (x0, y0) = (x0 as usize, y0 as usize);
+            let mut buf = I420Buffer::new(w as u32, h as u32);
+            let (sy, su, sv) = buf.strides();
+            let (dy, du, dv) = buf.data_mut();
+            for y in 0..h {
+                dy[y * sy as usize..y * sy as usize + w].copy_from_slice(&fundo[y * w..y * w + w]);
+            }
+            for y in 0..jh {
+                let o = (y0 + y) * sy as usize + x0;
+                dy[o..o + jw].copy_from_slice(&janela[y * jw..y * jw + jw]);
+            }
+            du.fill(128);
+            dv.fill(128);
+            let _ = (su, sv);
+            fonte.capture_frame(&VideoFrame { rotation: VideoRotation::VideoRotation0, timestamp_us: 0, frame_metadata: None, buffer: buf });
+        }
+    });
 }
