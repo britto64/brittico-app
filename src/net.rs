@@ -127,6 +127,15 @@ impl std::fmt::Display for Erro {
     }
 }
 
+/// Baixa um arquivo (imagem) do servidor, na thread de quem chamou.
+pub fn baixar(path: &str) -> Result<Vec<u8>, String> {
+    let mut r = agente().get(&url(path)).call().map_err(|e| e.to_string())?;
+    if r.status().as_u16() != 200 {
+        return Err(format!("HTTP {}", r.status()));
+    }
+    r.body_mut().with_config().limit(8 * 1024 * 1024).read_to_vec().map_err(|e| e.to_string())
+}
+
 /// Faz um pedido agora (na thread de quem chamou). `corpo` vazio = sem corpo.
 pub fn pedir_ja(metodo: &str, path: &str, corpo: Option<&Value>) -> Result<Value, Erro> {
     let u = url(path);

@@ -15,13 +15,20 @@ use crate::ic;
 use crate::net;
 use eframe::egui::{self, text::LayoutJob, Align2, Color32, CursorIcon, FontId, ImageSource, Key, Painter, PointerButton, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, TextFormat, UiBuilder, Vec2};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 mod janelas;
 mod rede;
 use janelas::{Busca, Denuncia, Envio, Janela, Moderacao, Roleta, Selo, Visual};
 
 /// O que o botão do mouse está fazendo no canvas desde que desceu.
+/// Uma imagem pronta de um pedaço do mapa (o que o site mostra longe, onde os pixels não foram baixados).
+enum Snap {
+    Pedindo,
+    Vazio,
+    Tex(egui::TextureHandle),
+}
+
 #[derive(Clone, Copy)]
 enum Arrasto {
     /// Movendo a câmera: onde o mouse e a câmera estavam, e se já andou o bastante para não ser um clique.
@@ -176,6 +183,11 @@ pub struct LpState {
     busca_res: Vec<MockStreamer>,
     busca_t: f64,
     pixels: HashMap<(i32, i32), Pixel>,
+    /// Os pedaços (de 32×32 células) cujos pixels o servidor já mandou; os outros aparecem pelas imagens prontas (snapshots).
+    cobertos: HashSet<(i32, i32)>,
+    snaps: HashMap<(i32, i32), Snap>,
+    snaps_voltam: Option<(std::sync::mpsc::Sender<((i32, i32), Option<egui::ColorImage>)>, std::sync::mpsc::Receiver<((i32, i32), Option<egui::ColorImage>)>)>,
+    snaps_em_voo: usize,
     /// A câmera: o centro em células e o zoom (`cam` do livepixel.js).
     cam: (f32, f32, f32),
     arrasto: Option<Arrasto>,
@@ -246,7 +258,11 @@ impl Default for LpState {
             busca_res: Vec::new(),
             busca_t: 0.0,
             pixels: HashMap::new(),
-            cam: (0.0, 0.0, 1.6),
+            cobertos: HashSet::new(),
+            snaps: HashMap::new(),
+            snaps_voltam: Some(std::sync::mpsc::channel()),
+            snaps_em_voo: 0,
+            cam: (0.0, 0.0, std::env::var("BRITTICO_ZOOM").ok().and_then(|v| v.parse().ok()).unwrap_or(1.6)),
             arrasto: None,
             hover: None,
             grid: true,
@@ -381,7 +397,7 @@ impl LpState {
     /// A parte do mapa que está na tela: pede ao servidor os pedaços que faltam (quando a câmera para de andar).
     fn pedir_vista(&mut self, area: Rect, t: f64) {
         let ps = (PX * self.cam.2).max(0.5);
-        let r = ((area.width().max(area.height()) / 2.0 / ps) as i32 + 8).clamp(8, 250);
+        let r = (((area.width().max(area.height()) / 2.0 / ps).ceil() * 2.2) as i32).clamp(160, 250);
         let v = (self.cam.0.round() as i32, self.cam.1.round() as i32, r);
         if self.view_enviada == Some(v) || !self.online {
             return;
@@ -394,6 +410,15 @@ impl LpState {
         }
         self.view_mudou = 0.0;
         self.view_enviada = Some(v);
+        // os pedaços inteiros dentro do que o servidor vai mandar
+        for cx in (v.0 - v.2).div_euclid(32) + 1..=(v.0 + v.2).div_euclid(32) - 1 {
+            for cy in (v.1 - v.2).div_euclid(32) + 1..=(v.1 + v.2).div_euclid(32) - 1 {
+                self.cobertos.insert((cx, cy));
+            }
+        }
+        if self.cobertos.len() > 3000 {
+            self.cobertos.clear();
+        }
         self.mandar(serde_json::json!({ "type": "view", "cx": v.0, "cy": v.1, "r": v.2 }));
     }
 
@@ -901,6 +926,57 @@ pub fn show(ui: &mut egui::Ui, st: &mut LpState, body: Rect, t: f64, geracao: u6
     }
 }
 
+/// Pedaços (32×32 células) que estão na tela e ainda não têm pixels: pede a imagem pronta e a desenha esticada.
+#[allow(clippy::too_many_arguments)]
+fn desenhar_snapshots(ui: &egui::Ui, st: &mut LpState, p: &Painter, area: Rect, x0: i32, x1: i32, y0: i32, y1: i32) {
+    // o que chegou das threads vira textura
+    if let Some((_, rx)) = &st.snaps_voltam {
+        let chegou: Vec<_> = rx.try_iter().collect();
+        for (k, img) in chegou {
+            st.snaps_em_voo = st.snaps_em_voo.saturating_sub(1);
+            st.snaps.insert(k, match img {
+                Some(i) => Snap::Tex(ui.ctx().load_texture(format!("lp-snap-{}-{}", k.0, k.1), i, egui::TextureOptions::LINEAR)),
+                None => Snap::Vazio,
+            });
+        }
+    }
+    if st.snaps.len() > 1200 {
+        st.snaps.retain(|_, v| matches!(v, Snap::Pedindo));
+    }
+    let ps = PX * st.cam.2;
+    let lado = 32.0 * ps;
+    for cbx in x0.div_euclid(32) - 1..=x1.div_euclid(32) + 1 {
+        for cby in y0.div_euclid(32) - 1..=y1.div_euclid(32) + 1 {
+            if st.cobertos.contains(&(cbx, cby)) || cbx.abs() > 160 || cby.abs() > 160 {
+                continue;
+            }
+            match st.snaps.get(&(cbx, cby)) {
+                Some(Snap::Tex(t)) => {
+                    let o = st.w2s(area, (cbx * 32) as f32, (cby * 32) as f32);
+                    p.image(t.id(), Rect::from_min_size(o, Vec2::splat(lado)), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                }
+                Some(_) => {}
+                None if st.snaps_em_voo < 6 && st.online => {
+                    st.snaps.insert((cbx, cby), Snap::Pedindo);
+                    st.snaps_em_voo += 1;
+                    let (tx, ctx) = (st.snaps_voltam.as_ref().map(|(t, _)| t.clone()), ui.ctx().clone());
+                    if let Some(tx) = tx {
+                        std::thread::spawn(move || {
+                            let img = net::baixar(&format!("/api/livepixel/snapshots/{cbx}_{cby}.webp")).ok().and_then(|b| image::load_from_memory(&b).ok()).map(|i| {
+                                let r = i.to_rgba8();
+                                egui::ColorImage::from_rgba_unmultiplied([r.width() as usize, r.height() as usize], r.as_raw())
+                            });
+                            let _ = tx.send(((cbx, cby), img));
+                            ctx.request_repaint();
+                        });
+                    }
+                }
+                None => {}
+            }
+        }
+    }
+}
+
 /// O canvas: o fundo, a grade, os eixos, os pixels e a prévia do pincel sob o mouse. Arrastar move, a roda aproxima,
 /// o clique pinta, o direito mostra quem pintou.
 fn canvas(ui: &mut egui::Ui, st: &mut LpState, area: Rect, t: f64) {
@@ -939,6 +1015,9 @@ fn canvas(ui: &mut egui::Ui, st: &mut LpState, area: Rect, t: f64) {
         territories(&p, st, area, ps);
     }
     let selo_r = janelas::desenhar_selo(ui, st, area);
+
+    // longe dos pixels baixados: as imagens prontas de cada pedaço (como o livepixel.js)
+    desenhar_snapshots(ui, st, &p, area, x0, x1, y0, y1);
 
     let side = ps.ceil();
     // na moderação, os pixels selecionados que estão sendo arrastados aparecem no lugar novo
