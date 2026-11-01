@@ -1,0 +1,64 @@
+# Gera o brittico.exe no próprio GitHub (Windows de verdade, compilador da Microsoft), sem build cruzado.
+# Roda em todo push na main e em tags v*; a tag publica o .exe numa Release, com o SHA-256 e a atestação de origem.
+name: Windows
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write      # criar a Release
+  id-token: write      # atestação de origem
+  attestations: write
+
+jobs:
+  exe:
+    runs-on: windows-latest
+    steps:
+      # o app procura o motor de voz em ../olheiro-voz: o mesmo desenho de pastas do computador
+      - uses: actions/checkout@v4
+        with:
+          path: 14.brittico-app/app
+      - uses: actions/checkout@v4
+        with:
+          repository: britto64/olheiro-voz
+          path: 14.brittico-app/olheiro-voz
+          token: ${{ secrets.OLHEIRO_VOZ_TOKEN || github.token }}
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: 14.brittico-app/app
+
+      - name: Compilar
+        working-directory: 14.brittico-app/app
+        run: cargo build --release --locked
+
+      - name: SHA-256
+        working-directory: 14.brittico-app/app
+        shell: pwsh
+        run: |
+          Copy-Item target/release/brittico.exe brittico.exe
+          (Get-FileHash brittico.exe -Algorithm SHA256).Hash.ToLower() + "  brittico.exe" | Out-File -Encoding ascii brittico.exe.sha256
+          Get-Content brittico.exe.sha256
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 14.brittico-app/app/brittico.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: brittico-windows
+          path: |
+            14.brittico-app/app/brittico.exe
+            14.brittico-app/app/brittico.exe.sha256
+
+      - name: Publicar a Release (só em tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            14.brittico-app/app/brittico.exe
+            14.brittico-app/app/brittico.exe.sha256
