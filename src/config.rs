@@ -30,6 +30,8 @@ pub struct ConfigState {
     avisos: bool,
     retomar: bool,
     animacoes: bool,
+    /// A tela da Call em Full HD (o padrão é HD): o mesmo arquivo `<pasta>/tela` que a Call lê ao começar.
+    tela_fullhd: bool,
     toast: ui::Toast,
 }
 
@@ -49,6 +51,7 @@ impl Default for ConfigState {
             avisos: true,
             retomar: true,
             animacoes: true,
+            tela_fullhd: crate::call::tela_fullhd(),
             toast: ui::Toast::default(),
         }
     }
@@ -367,10 +370,17 @@ fn atalhos(ui: &mut egui::Ui, x: f32, top: f32, w: f32) {
 
 fn app(ui: &mut egui::Ui, st: &mut ConfigState, x: f32, top: f32, w: f32) {
     let p = ui.painter().clone();
-    let cx = ajustes::card(&p, x, top, w, 120.0 + 58.0 + 20.0, "O app", "Como o Brittico se comporta neste computador.");
+    let cx = ajustes::card(&p, x, top, w, 120.0 + 2.0 * 58.0 + 20.0, "O app", "Como o Brittico se comporta neste computador.");
     let cw = w - 50.0;
     let y = top + 119.3;
-    chave(ui, cx, y, cw, "animacoes", "Animações", "As capas dos Jogos flutuando e os enfeites que se mexem. Desligar economiza processador em PC fraco.", &mut st.animacoes);
+    let y = y + chave(ui, cx, y, cw, "animacoes", "Animações", "As capas dos Jogos flutuando e os enfeites que se mexem. Desligar economiza processador em PC fraco.", &mut st.animacoes) + 12.0;
+    p.rect_filled(Rect::from_min_size(Pos2::new(cx, y - 6.0), Vec2::new(cw, 1.0)), 0.0, HAIRLINE_2());
+    let y = y + 6.0;
+    let antes = st.tela_fullhd;
+    chave(ui, cx, y, cw, "tela-fullhd", "Tela em Full HD", "Mostrar a tela na Call em 1080p em vez de 720p. Pesa mais na conexão de quem assiste.", &mut st.tela_fullhd);
+    if st.tela_fullhd != antes {
+        let _ = std::fs::write(crate::net::dir().join("tela"), if st.tela_fullhd { "1080" } else { "720" });
+    }
 }
 
 /// A memória própria do programa (o `RssAnon` do Linux: sem as bibliotecas e o driver de vídeo, que são divididos com

@@ -68,7 +68,8 @@ impl Modo {
     fn fps(self) -> f64 {
         match self {
             Modo::Qualidade => 30.0,
-            Modo::Fluidez => 60.0,
+            // 30 (2026-11-01, pedido dele: um modo só, o Fluidez a 30 em vez de 60)
+            Modo::Fluidez => 30.0,
         }
     }
     /// O teto de bitrate (bits por segundo): 12 Mbps (pedido dele, 2026-11-01). Na conta da porta de 200 Mbps da
@@ -509,7 +510,12 @@ async fn mostrar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, fullhd:
         None => generico,
     };
     let mut opcoes = DesktopCapturerOptions::new(tipo);
-    opcoes.set_include_cursor(true);
+    // no Windows quem desenha o cursor é o app (call/cursor.rs): pedir que a captura o embuta poderia dar dois cursores
+    opcoes.set_include_cursor(!cfg!(windows));
+    #[cfg(windows)]
+    let mut cursor_win = super::cursor::Cursor::default();
+    #[cfg(windows)]
+    let janela_win = escolha.filter(|e| e.janela).map(|e| e.id);
     // o modo "conteúdo de tela" do libwebrtc fica DESLIGADO: com movimento rápido ele descarta quadros de propósito e
     // nem usa a banda que tem (medido: 2 a 4 fps com ~3 Mbps de 8). BRITTICO_TELA_SCREENCAST=1 e
     // BRITTICO_TELA_CODEC=vp8|h264|vp9|av1 servem para medir.
@@ -567,6 +573,26 @@ async fn mostrar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, fullhd:
                 let (sy, su, sv) = buf.strides();
                 let (dy, du, dv) = buf.data_mut();
                 livekit::webrtc::native::yuv_helper::argb_to_i420(q.data(), q.stride(), dy, sy, du, su, dv, sv, w as i32, h as i32);
+                #[cfg(windows)]
+                if let Some((x0, y0, pw, ph, px)) = cursor_win.retalho(q.data(), q.stride() as usize, w as i32, h as i32, super::cursor::origem(janela_win, (q.left(), q.top()))) {
+                    // o retalho com o cursor, em I420, por cima do quadro
+                    let mut rb = I420Buffer::new(pw as u32, ph as u32);
+                    let (rsy, rsu, rsv) = rb.strides();
+                    let (ry, ru, rv) = rb.data_mut();
+                    livekit::webrtc::native::yuv_helper::argb_to_i420(&px, (pw * 4) as u32, ry, rsy, ru, rsu, rv, rsv, pw, ph);
+                    let (sy, su, sv) = buf.strides();
+                    let (dy, du, dv) = buf.data_mut();
+                    let (x0, y0, pw, ph) = (x0 as usize, y0 as usize, pw as usize, ph as usize);
+                    for y in 0..ph {
+                        dy[(y0 + y) * sy as usize + x0..(y0 + y) * sy as usize + x0 + pw].copy_from_slice(&ry[y * rsy as usize..y * rsy as usize + pw]);
+                    }
+                    for y in 0..ph / 2 {
+                        let (d, o) = ((y0 / 2 + y) * su as usize + x0 / 2, y * rsu as usize);
+                        du[d..d + pw / 2].copy_from_slice(&ru[o..o + pw / 2]);
+                        let (d, o) = ((y0 / 2 + y) * sv as usize + x0 / 2, y * rsv as usize);
+                        dv[d..d + pw / 2].copy_from_slice(&rv[o..o + pw / 2]);
+                    }
+                }
                 if h > alt {
                     let nw = ((w as u64 * alt as u64 / h as u64) as i32) & !1;
                     buf = buf.scale(nw, alt as i32);

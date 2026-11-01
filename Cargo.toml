@@ -10,7 +10,7 @@ publish = false
 [package]
 name = "brittico-app"
 description = "O Brittico como programa: o site (brittico.xyz) tela por tela: Início, Jogos, LivePixel, Call com voz e tela, perfil e configurações."
-version = "1.0.2"
+version = "1.0.3"
 edition = "2021"
 publish = false
 
@@ -40,6 +40,10 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time",
 futures-util = { version = "0.3", default-features = false }
 # o LoL de proximidade: o motor do Olheiro (leitura do LoL, sala de voz, som), agora dentro deste repositório (crates/)
 olheiro-motor = { path = "crates/olheiro-motor" }
+
+# o cursor do mouse na tela mostrada (a captura do LiveKit no Windows não o desenha): GetCursorInfo/GetIconInfo/GetDIBits
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging"] }
 
 # o ícone e a versão dentro do brittico.exe (só quando o build roda num Windows, como no GitHub Actions)
 [target.'cfg(windows)'.build-dependencies]

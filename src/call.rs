@@ -18,6 +18,8 @@ use std::collections::{HashMap, HashSet};
 mod acoes;
 pub mod rede;
 pub mod voz;
+#[cfg(windows)]
+pub mod cursor;
 use acoes::Convite;
 
 const CHLIST_W: f32 = 248.0;
@@ -58,11 +60,8 @@ pub struct CallState {
     grupo_menu: Option<Pos2>,
     conta_menu: Option<Pos2>,
     lol_menu: Option<Pos2>,
-    /// O menu de "Mostrar a tela" (Qualidade ou Fluidez) e o último modo escolhido (o da tecla S).
-    tela_menu: Option<Pos2>,
+    /// O modo da tela (um só desde 2026-11-01: o Fluidez a 30 fps).
     tela_modo: voz::Modo,
-    /// Mostrar a tela em Full HD (1080p) em vez de HD (720p, o padrão); guardado em `<pasta>/tela`.
-    tela_fullhd: bool,
     /// O seletor de tela do app (Windows e Linux em X11): as telas e janelas (carregando) e a aba aberta.
     seletor: Option<acoes::Seletor>,
     convite: Option<Convite>,
@@ -124,9 +123,7 @@ impl Default for CallState {
             grupo_menu: None,
             conta_menu: None,
             lol_menu: None,
-            tela_menu: None,
             tela_modo: voz::Modo::default(),
-            tela_fullhd: std::fs::read_to_string(net::dir().join("tela")).is_ok_and(|s| s.trim() == "1080"),
             seletor: None,
             convite: None,
             emotes_abertos: false,
@@ -173,12 +170,12 @@ impl CallState {
         self.card = Some((id, Pos2::new(1600.0 - 270.0 - 8.0 - 260.0, 120.0)));
     }
 
-    /// Começa a mostrar a tela no modo dado: no Wayland o seletor do sistema pergunta qual; nos outros abre o do app.
+    /// Começa a mostrar a tela no modo dado (há um só desde 2026-11-01, o Fluidez a 30 fps): no Wayland o seletor do sistema pergunta qual; nos outros abre o do app.
     fn comecar_tela(&mut self, ctx: &egui::Context, modo: voz::Modo) {
         self.tela_modo = modo;
         if voz::seletor_do_sistema() {
             if let Some(v) = &self.voz {
-                v.mandar(voz::Cmd::Tela(Some((modo, None, self.tela_fullhd))));
+                v.mandar(voz::Cmd::Tela(Some((modo, None, tela_fullhd()))));
             }
         } else if self.voz.is_some() {
             self.seletor = Some(acoes::Seletor::abrir(ctx));
@@ -1179,6 +1176,20 @@ fn draw_tile(ui: &egui::Ui, st: &CallState, r: Rect, tile: Tile, t: f64) {
     } else {
         ui::avatar(ui, &person.name, person.photo(), r.center(), (r.height() * 0.3).clamp(40.0, 96.0), false, None);
     }
+    // a tela de outra pessoa que não está selecionada chega a 144p e 1 quadro/s: um véu escuro de leve e o "Assistir"
+    // (o clique no quadro a seleciona; o botão só mostra isso)
+    let selecionada = st.foco == Some(tile) || st.quadro_cheio == Some(tile);
+    if screen && id != dados::eu() && !selecionada {
+        p.rect_filled(r, R_MD(), Color32::from_black_alpha(82));
+        let tam = if r.height() < 120.0 { 12.0 } else { 14.0 };
+        let largura = ui::text_width(&p, "Assistir", f7(tam), 0.0) + if tam < 13.0 { 26.0 } else { 44.0 };
+        let botao = Rect::from_center_size(r.center(), Vec2::new(largura, if tam < 13.0 { 26.0 } else { 34.0 }));
+        let quente = ui.rect_contains_pointer(r) && ui.ctx().pointer_hover_pos().is_some_and(|q| botao.contains(q));
+        let b = if quente { botao.expand(1.5) } else { botao };
+        p.rect_filled(b.translate(Vec2::new(0.0, 3.0)), b.height() / 2.0, Color32::from_black_alpha(70));
+        p.rect_filled(b, b.height() / 2.0, if quente { Color32::from_gray(241) } else { Color32::WHITE });
+        text(&p, b.center(), Align2::CENTER_CENTER, "Assistir", f7(tam), Color32::from_gray(17), 0.0);
+    }
     // a barra do nome: degradê escuro embaixo
     let bar = Rect::from_min_max(Pos2::new(r.left(), r.bottom() - 52.0), r.max);
     ui::vgradient(&p, bar, Color32::TRANSPARENT, Color32::from_black_alpha(184));
@@ -1277,12 +1288,10 @@ fn controls(ui: &mut egui::Ui, st: &mut CallState, bar: Rect) {
                 if let Some(v) = &st.voz {
                     v.mandar(voz::Cmd::Tela(None));
                 }
-            } else if st.tela_menu.is_some() {
-                st.tela_menu = None;
             } else {
-                // o menu sobe em cima do botão da tela (o 3º do meio)
-                let bx = bar.center().x - total / 2.0 + 2.0 * (size + gap) + size / 2.0;
-                st.tela_menu = Some(Pos2::new(bx - acoes::TELA_MENU_W / 2.0, bar.top() - acoes::TELA_MENU_H - 8.0));
+                // um modo só (2026-11-01): o botão já começa; o Full HD fica nas Configurações
+                let _ = (total, gap, size);
+                st.comecar_tela(ui.ctx(), voz::Modo::Fluidez);
             }
         }
         Some(3) => {
@@ -1445,4 +1454,10 @@ fn person_row(ui: &mut egui::Ui, st: &CallState, id: usize, role: Option<&Role>,
         crate::nome::desenhar(ui, Pos2::new(r.left() + 54.0 + 14.0, r.center().y + 9.0), Align2::LEFT_CENTER, &dados::canal_ou(room).name, f6(10.5), FAINT(), 0.0, r.width() - 54.0 - 14.0 - 8.0);
     }
     resp.clicked().then(|| r.left_top())
+}
+
+/// Mostrar a tela em Full HD (1080p) em vez de HD (720p, o padrão): a chave escondida nas Configurações → O app,
+/// guardada em `<pasta>/tela`. Lida na hora de começar, para valer sem reabrir o app.
+pub fn tela_fullhd() -> bool {
+    std::fs::read_to_string(net::dir().join("tela")).is_ok_and(|s| s.trim() == "1080")
 }
