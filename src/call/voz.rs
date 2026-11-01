@@ -83,14 +83,109 @@ impl Modo {
     }
 }
 
+/// O que a pessoa escolheu no seletor do app: uma tela (monitor) ou uma janela, pelo id do capturador do libwebrtc.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Escolha {
+    pub janela: bool,
+    pub id: u64,
+}
+
+/// Uma tela ou janela que dá para mostrar, com o nome e uma miniatura (largura, altura, RGBA).
+pub struct Fonte {
+    pub escolha: Escolha,
+    pub nome: String,
+    pub miniatura: Option<(usize, usize, Vec<u8>)>,
+}
+
+/// No Wayland quem escolhe é o seletor do sistema (o portal); nos outros (Windows, Linux em X11) é o do app.
+pub fn seletor_do_sistema() -> bool {
+    cfg!(target_os = "linux") && std::env::var("WAYLAND_DISPLAY").is_ok()
+}
+
+/// As telas e as janelas abertas, cada uma com uma miniatura (um quadro capturado e reduzido). Demora um pouco: rodar
+/// fora da tela.
+pub fn fontes() -> Vec<Fonte> {
+    use livekit::webrtc::desktop_capturer::{DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions};
+    let mut out = Vec::new();
+    for janela in [false, true] {
+        let tipo = if janela { DesktopCaptureSourceType::Window } else { DesktopCaptureSourceType::Screen };
+        let opcoes = || {
+            let mut o = DesktopCapturerOptions::new(tipo);
+            o.set_include_cursor(false);
+            o
+        };
+        let Some(lista) = DesktopCapturer::new(opcoes()) else { continue };
+        for (k, src) in lista.get_source_list().into_iter().enumerate() {
+            let id = src.id();
+            let titulo = src.title();
+            if janela && titulo.trim().is_empty() {
+                continue;
+            }
+            let nome = if janela { titulo } else { format!("Tela {}", k + 1) };
+            // um capturador por fonte, só para tirar a miniatura
+            let miniatura = DesktopCapturer::new(opcoes()).and_then(|mut cap| {
+                let guardado: Arc<Mutex<Option<(usize, usize, Vec<u8>)>>> = Arc::new(Mutex::new(None));
+                let g2 = guardado.clone();
+                cap.start_capture(Some(src), move |r| {
+                    let Ok(q) = r else { return };
+                    if let Ok(mut g) = g2.lock() {
+                        *g = miniatura_de(q.data(), q.width().max(0) as usize, q.height().max(0) as usize, q.stride() as usize);
+                    }
+                });
+                // o primeiro quadro às vezes vem vazio (a captura ainda acordando): tenta algumas vezes
+                for _ in 0..5 {
+                    cap.capture_frame();
+                    if guardado.lock().is_ok_and(|g| g.is_some()) {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(40));
+                }
+                let r = guardado.lock().ok().and_then(|mut g| g.take());
+                r
+            });
+            if janela && miniatura.is_none() {
+                // janela minimizada ou que não deixa capturar: some da lista, como no Discord
+                continue;
+            }
+            out.push(Fonte { escolha: Escolha { janela, id }, nome, miniatura });
+        }
+    }
+    out
+}
+
+/// Um quadro BGRA reduzido para no máximo 320 de largura, em RGBA.
+fn miniatura_de(bgra: &[u8], w: usize, h: usize, stride: usize) -> Option<(usize, usize, Vec<u8>)> {
+    if w < 2 || h < 2 || bgra.len() < stride * h {
+        return None;
+    }
+    let passo = (w as f32 / 320.0).max(1.0);
+    let (mw, mh) = (((w as f32 / passo) as usize).max(1), ((h as f32 / passo) as usize).max(1));
+    let mut out = Vec::with_capacity(mw * mh * 4);
+    let mut tudo_preto = true;
+    for y in 0..mh {
+        let sy = ((y as f32 * passo) as usize).min(h - 1);
+        for x in 0..mw {
+            let sx = ((x as f32 * passo) as usize).min(w - 1);
+            let i = sy * stride + sx * 4;
+            let (b, g, r) = (bgra[i], bgra[i + 1], bgra[i + 2]);
+            if r | g | b > 8 {
+                tudo_preto = false;
+            }
+            out.extend_from_slice(&[r, g, b, 255]);
+        }
+    }
+    (!tudo_preto).then_some((mw, mh, out))
+}
+
 /// A altura máxima da tela que sai: maior que isso (um monitor 1440p ou 4K) é reduzido para 1080p.
 const ALTURA_MAX: u32 = 1080;
 
 pub enum Cmd {
     Mic(bool),
     Surdo(bool),
-    /// Mostrar a tela no modo dado, ou parar (`None`).
-    Tela(Option<Modo>),
+    /// Mostrar a tela no modo dado (e a tela ou janela escolhida no seletor do app; `None` = o seletor do sistema no
+    /// Wayland), ou parar (`None`).
+    Tela(Option<(Modo, Option<Escolha>)>),
     Volume(i64, f32),
     Sair,
 }
@@ -223,7 +318,7 @@ async fn rodar(token_path: String, entrada: Option<(String, String)>, mic: Strin
     let mut tela: Option<(LocalVideoTrack, std::sync::mpsc::SyncSender<()>)> = None;
     if std::env::var("BRITTICO_VOZ_TELA").is_ok() {
         let modo = if std::env::var("BRITTICO_VOZ_TELA").is_ok_and(|v| v == "fluidez") { Modo::Fluidez } else { Modo::Qualidade };
-        match mostrar_tela(&room, modo).await {
+        match mostrar_tela(&room, modo, None).await {
             Ok(t) => { tela = Some(t); mudar(&|s| s.tela = true); }
             Err(e) => eprintln!("[voz] tela: {e}"),
         }
@@ -303,8 +398,8 @@ async fn rodar(token_path: String, entrada: Option<(String, String)>, mic: Strin
                     Some(Cmd::Mic(aberto)) => if aberto { faixa.unmute() } else { faixa.mute() },
                     Some(Cmd::Surdo(s)) => if let Ok(mut m) = mistura.lock() { m.surdo = s },
                     Some(Cmd::Volume(id, v)) => if let Ok(mut m) = mistura.lock() { m.alvo(&id.to_string(), v); m.alvo(&format!("{id}:tela"), v) },
-                    Some(Cmd::Tela(Some(modo))) if tela.is_none() => {
-                        match mostrar_tela(&room, modo).await {
+                    Some(Cmd::Tela(Some((modo, escolha)))) if tela.is_none() => {
+                        match mostrar_tela(&room, modo, escolha).await {
                             Ok(t) => { tela = Some(t); mudar(&|s| s.tela = true); }
                             Err(e) => mudar(&|s| { s.tela = false; s.aviso = Some(e.clone()); }),
                         }
@@ -338,18 +433,27 @@ async fn rodar(token_path: String, entrada: Option<(String, String)>, mic: Strin
 /// Mostra a tela: o capturador do libwebrtc (no Windows a tela inteira; no Linux com Wayland o seletor do sistema)
 /// manda quadros BGRA, que viram I420 (no máximo 1080p) e saem por uma faixa de vídeo `Screenshare` no ritmo, no bitrate
 /// e com a preferência do `modo`.
-async fn mostrar_tela(room: &Room, modo: Modo) -> Result<(LocalVideoTrack, std::sync::mpsc::SyncSender<()>), String> {
+async fn mostrar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>) -> Result<(LocalVideoTrack, std::sync::mpsc::SyncSender<()>), String> {
     use livekit::webrtc::desktop_capturer::{DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions};
     #[cfg(target_os = "linux")]
-    let tipo = if std::env::var("WAYLAND_DISPLAY").is_ok() { DesktopCaptureSourceType::Generic } else { DesktopCaptureSourceType::Screen };
+    let generico = if seletor_do_sistema() { DesktopCaptureSourceType::Generic } else { DesktopCaptureSourceType::Screen };
     #[cfg(not(target_os = "linux"))]
-    let tipo = DesktopCaptureSourceType::Screen;
+    let generico = DesktopCaptureSourceType::Screen;
+    let tipo = match escolha {
+        Some(e) if e.janela => DesktopCaptureSourceType::Window,
+        Some(_) => DesktopCaptureSourceType::Screen,
+        None => generico,
+    };
     let mut opcoes = DesktopCapturerOptions::new(tipo);
     opcoes.set_include_cursor(true);
     let fonte = NativeVideoSource::new(VideoResolution { width: 1920, height: 1080 }, true);
     let faixa = LocalVideoTrack::create_video_track("tela", RtcVideoSource::Native(fonte.clone()));
     let (parar_tx, parar_rx) = std::sync::mpsc::sync_channel::<()>(0);
-    let (pronto_tx, pronto_rx) = std::sync::mpsc::sync_channel::<Result<(), String>>(1);
+    let (pronto_tx, pronto_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+    // 0 = esperando, 1 = chegou quadro, 2 = a captura acabou (no Wayland: a pessoa cancelou o seletor do sistema)
+    let situacao = Arc::new(std::sync::atomic::AtomicU8::new(0));
+    let sit = situacao.clone();
+    let pelo_sistema = escolha.is_none() && seletor_do_sistema();
     // o capturador não pode mudar de thread: vive numa só, pedindo um quadro a cada 1/fps até a faixa sair
     let intervalo = std::time::Duration::from_secs_f64(1.0 / modo.fps());
     std::thread::Builder::new()
@@ -359,9 +463,28 @@ async fn mostrar_tela(room: &Room, modo: Modo) -> Result<(LocalVideoTrack, std::
                 let _ = pronto_tx.send(Err("Este computador não deixou capturar a tela.".into()));
                 return;
             };
-            let primeira = cap.get_source_list().into_iter().next();
-            cap.start_capture(primeira, move |r| {
-                let Ok(q) = r else { return };
+            let lista = cap.get_source_list();
+            let fonte_escolhida = match escolha {
+                Some(e) => match lista.into_iter().find(|f| f.id() == e.id) {
+                    Some(f) => Some(f),
+                    None => {
+                        let _ = pronto_tx.send(Err(if e.janela { "Essa janela foi fechada." } else { "Essa tela não está mais ligada." }.into()));
+                        return;
+                    }
+                },
+                None => lista.into_iter().next(),
+            };
+            cap.start_capture(fonte_escolhida, move |r| {
+                let q = match r {
+                    Ok(q) => q,
+                    Err(livekit::webrtc::desktop_capturer::CaptureError::Permanent) => {
+                        if sit.swap(2, Ordering::Relaxed) != 2 && std::env::var("BRITTICO_VOZ_LOG").is_ok() {
+                            eprintln!("[voz] tela: a captura acabou");
+                        }
+                        return;
+                    }
+                    Err(_) => return,
+                };
                 let (w, h) = (q.width() as u32 & !1, q.height() as u32 & !1);
                 if w == 0 || h == 0 {
                     return;
@@ -376,8 +499,14 @@ async fn mostrar_tela(room: &Room, modo: Modo) -> Result<(LocalVideoTrack, std::
                 }
                 let quadro = VideoFrame { rotation: VideoRotation::VideoRotation0, timestamp_us: 0, frame_metadata: None, buffer: buf };
                 fonte.capture_frame(&quadro);
+                if sit.compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed).is_ok() && std::env::var("BRITTICO_VOZ_LOG").is_ok() {
+                    eprintln!("[voz] tela: primeiro quadro {w}x{h}");
+                }
             });
-            let _ = pronto_tx.send(Ok(()));
+            // só diz que começou quando o primeiro quadro chega: no Wayland isso é depois de a pessoa escolher no
+            // seletor do sistema (que pode levar o tempo dela); se ela cancelar, a tela nem entra na call
+            let mut pronto_tx = Some(pronto_tx);
+            let prazo = std::time::Instant::now() + std::time::Duration::from_secs(if pelo_sistema { 180 } else { 20 });
             // o relógio marca a hora de cada quadro; se um atrasar, o próximo não tenta compensar em rajada
             let mut proximo = std::time::Instant::now();
             loop {
@@ -390,10 +519,23 @@ async fn mostrar_tela(room: &Room, modo: Modo) -> Result<(LocalVideoTrack, std::
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => cap.capture_frame(),
                     _ => break,
                 }
+                if pronto_tx.is_some() {
+                    let erro = match situacao.load(Ordering::Relaxed) {
+                        1 => None,
+                        2 => Some(if pelo_sistema { "A tela não foi escolhida." } else { "Não deu para capturar essa tela." }),
+                        _ if std::time::Instant::now() > prazo => Some("A captura da tela não começou."),
+                        _ => continue,
+                    };
+                    let falhou = erro.is_some();
+                    let _ = pronto_tx.take().unwrap().send(erro.map_or(Ok(()), |e| Err(e.to_owned())));
+                    if falhou {
+                        break;
+                    }
+                }
             }
         })
         .map_err(|e| e.to_string())?;
-    match pronto_rx.recv_timeout(std::time::Duration::from_secs(20)) {
+    match pronto_rx.await {
         Ok(Ok(())) => {}
         Ok(Err(e)) => return Err(e),
         Err(_) => return Err("A captura da tela não começou.".into()),

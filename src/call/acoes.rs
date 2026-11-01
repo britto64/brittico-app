@@ -225,10 +225,7 @@ pub(super) fn menus(ui: &egui::Ui, st: &mut CallState, t: f64) {
         let itens = [(ic!("sparkle"), "Qualidade · 1080p", false), (ic!("bolt"), "Fluidez · 60 fps", false)];
         let (esc, fora) = menu(ui, "tela", at, TELA_MENU_W, &itens, Some("Mostrar a tela"));
         if let Some(i) = esc {
-            st.tela_modo = if i == 0 { voz::Modo::Qualidade } else { voz::Modo::Fluidez };
-            if let Some(v) = &st.voz {
-                v.mandar(voz::Cmd::Tela(Some(st.tela_modo)));
-            }
+            st.comecar_tela(ui.ctx(), if i == 0 { voz::Modo::Qualidade } else { voz::Modo::Fluidez });
         }
         // o clique no próprio botão da tela já fecha o menu pela barra
         if esc.is_some() || (fora && !ui.input(|i| i.pointer.interact_pos()).is_some_and(|q| q.y > at.y + TELA_MENU_H)) {
@@ -488,6 +485,7 @@ pub(super) fn atalhos(ui: &egui::Ui, st: &mut CallState) {
     if st.joined.is_none() || ui.ctx().wants_keyboard_input() {
         return;
     }
+    let mut pedir_tela = false;
     ui.input(|i| {
         if i.key_pressed(Key::M) {
             if st.deafened {
@@ -502,9 +500,13 @@ pub(super) fn atalhos(ui: &egui::Ui, st: &mut CallState) {
             st.deafened = !st.deafened;
             st.aplicar_som();
         }
-        if i.key_pressed(Key::S) {
-            if let Some(v) = &st.voz {
-                v.mandar(voz::Cmd::Tela(if st.sharing { None } else { Some(st.tela_modo) }));
+        if i.key_pressed(Key::S) && st.seletor.is_none() {
+            if st.sharing {
+                if let Some(v) = &st.voz {
+                    v.mandar(voz::Cmd::Tela(None));
+                }
+            } else {
+                pedir_tela = true;
             }
         }
         if i.key_pressed(Key::I) {
@@ -521,4 +523,149 @@ pub(super) fn atalhos(ui: &egui::Ui, st: &mut CallState) {
             }
         }
     });
+    if pedir_tela {
+        let modo = st.tela_modo;
+        st.comecar_tela(ui.ctx(), modo);
+    }
+}
+
+/* ================= o seletor de tela (Windows e Linux em X11) ================= */
+
+/// O seletor de "Mostrar a tela" do app, como o do Discord: uma aba de telas e outra de janelas, cada uma com miniatura.
+pub(crate) struct Seletor {
+    tarefa: Option<net::Tarefa<Vec<voz::Fonte>>>,
+    fontes: Vec<voz::Fonte>,
+    /// As miniaturas já na placa de vídeo (na ordem de `fontes`).
+    texturas: Vec<Option<egui::TextureHandle>>,
+    janelas: bool,
+    erro: Option<String>,
+}
+
+impl Seletor {
+    pub(crate) fn abrir(ctx: &egui::Context) -> Self {
+        Seletor { tarefa: Some(net::rodar(ctx, || Ok(voz::fontes()))), fontes: Vec::new(), texturas: Vec::new(), janelas: false, erro: None }
+    }
+}
+
+pub(super) fn seletor_tela(ui: &egui::Ui, st: &mut CallState, body: Rect) {
+    let Some(sel) = st.seletor.as_mut() else { return };
+    if let Some(r) = sel.tarefa.as_ref().and_then(|t| t.pronto()) {
+        sel.tarefa = None;
+        match r {
+            Ok(f) => {
+                sel.texturas = f
+                    .iter()
+                    .enumerate()
+                    .map(|(k, x)| {
+                        x.miniatura.as_ref().map(|(w, h, rgba)| ui.ctx().load_texture(format!("tela-mini-{k}"), egui::ColorImage::from_rgba_unmultiplied([*w, *h], rgba), egui::TextureOptions::LINEAR))
+                    })
+                    .collect();
+                sel.fontes = f;
+                if sel.fontes.is_empty() {
+                    sel.erro = Some("Não achei nenhuma tela para mostrar.".into());
+                }
+            }
+            Err(e) => sel.erro = Some(e.msg),
+        }
+    }
+    let w = 720.0_f32.min(body.width() - 40.0);
+    let h = 520.0_f32.min(body.height() - 40.0);
+    let r = Rect::from_center_size(body.center(), Vec2::new(w, h));
+    let mut fechar = false;
+    let mut escolhida: Option<voz::Escolha> = None;
+    egui::Area::new(ui.id().with("dz-seletor-tela")).order(Order::Foreground).fixed_pos(body.min).constrain(false).show(ui.ctx(), |ui| {
+        let (_, fundo) = ui.allocate_exact_size(body.size(), Sense::click());
+        let p = ui.painter().clone();
+        let p = &p;
+        p.rect_filled(body, 0.0, Color32::from_black_alpha(150));
+        p.rect_filled(r, R_LG(), CREAM_0());
+        ui::bold(p, Pos2::new(r.left() + 24.0, r.top() + 34.0), Align2::LEFT_CENTER, "Mostrar a tela", patua(18.0), INK(), 0.0);
+        let modo = match st.tela_modo {
+            voz::Modo::Qualidade => "Qualidade · 1080p",
+            voz::Modo::Fluidez => "Fluidez · 60 fps",
+        };
+        text(p, Pos2::new(r.left() + 24.0, r.top() + 58.0), Align2::LEFT_CENTER, modo, f6(12.0), FAINT(), 0.0);
+        let x = Rect::from_center_size(Pos2::new(r.right() - 30.0, r.top() + 34.0), Vec2::splat(30.0));
+        let xr = ui.interact(x, ui.id().with("dz-seletor-x"), Sense::click()).on_hover_cursor(CursorIcon::PointingHand);
+        if xr.hovered() {
+            p.rect_filled(x, R_SM(), CREAM_2());
+        }
+        ui::icon(ui, ic!("x"), x.center(), 16.0, SOFT());
+        // as abas
+        let mut ax = r.left() + 24.0;
+        for (janelas, nome) in [(false, "Telas"), (true, "Janelas")] {
+            let n = sel.fontes.iter().filter(|f| f.escolha.janela == janelas).count();
+            let rotulo = if sel.tarefa.is_none() { format!("{nome} · {n}") } else { nome.to_owned() };
+            let tw = text_width(p, &rotulo, f7(13.0), 0.0) + 28.0;
+            let ab = Rect::from_min_size(Pos2::new(ax, r.top() + 78.0), Vec2::new(tw, 32.0));
+            let resp = ui.interact(ab, ui.id().with(("dz-seletor-aba", janelas)), Sense::click()).on_hover_cursor(CursorIcon::PointingHand);
+            let on = sel.janelas == janelas;
+            p.rect_filled(ab, R_SM(), if on { SECONDARY() } else if resp.hovered() { CREAM_2() } else { CREAM_1() });
+            text(p, ab.center(), Align2::CENTER_CENTER, &rotulo, f7(13.0), if on { ON_SECONDARY() } else { SOFT() }, 0.0);
+            if resp.clicked() {
+                sel.janelas = janelas;
+            }
+            ax += tw + 8.0;
+        }
+        let area = Rect::from_min_max(Pos2::new(r.left() + 16.0, r.top() + 122.0), Pos2::new(r.right() - 16.0, r.bottom() - 16.0));
+        if sel.tarefa.is_some() {
+            text(p, area.center(), Align2::CENTER_CENTER, "Procurando as telas e janelas…", f6(13.5), FAINT(), 0.0);
+        } else if let Some(e) = &sel.erro {
+            text(p, area.center(), Align2::CENTER_CENTER, e, f6(13.5), FAINT(), 0.0);
+        } else {
+            let idx: Vec<usize> = (0..sel.fontes.len()).filter(|&k| sel.fontes[k].escolha.janela == sel.janelas).collect();
+            if idx.is_empty() {
+                text(p, area.center(), Align2::CENTER_CENTER, if sel.janelas { "Nenhuma janela aberta." } else { "Nenhuma tela." }, f6(13.5), FAINT(), 0.0);
+            }
+            let mut filho = ui.new_child(egui::UiBuilder::new().max_rect(area));
+            egui::ScrollArea::vertical().id_salt("dz-seletor-lista").auto_shrink([false, false]).show(&mut filho, |ui| {
+                let cols = if sel.janelas { 3 } else { 2 };
+                let gap = 12.0;
+                let cw = ((area.width() - 10.0 - gap * (cols as f32 - 1.0)) / cols as f32).floor();
+                let mini_h = (cw * 9.0 / 16.0).floor();
+                let ch = mini_h + 16.0 + 26.0;
+                for linha in idx.chunks(cols) {
+                    let (lr, _) = ui.allocate_exact_size(Vec2::new(area.width() - 10.0, ch + gap), Sense::hover());
+                    for (c, &k) in linha.iter().enumerate() {
+                        let f = &sel.fontes[k];
+                        let cart = Rect::from_min_size(Pos2::new(lr.left() + c as f32 * (cw + gap), lr.top()), Vec2::new(cw, ch));
+                        let resp = ui.interact(cart, ui.id().with(("dz-seletor-fonte", k)), Sense::click()).on_hover_cursor(CursorIcon::PointingHand);
+                        let p = ui.painter();
+                        p.rect_filled(cart, R_MD(), if resp.hovered() { CREAM_2() } else { CREAM_1() });
+                        if resp.hovered() {
+                            p.rect_stroke(cart, R_MD(), Stroke::new(2.0_f32, SECONDARY()), egui::StrokeKind::Inside);
+                        }
+                        let caixa = Rect::from_min_size(cart.min + Vec2::splat(8.0), Vec2::new(cw - 16.0, mini_h));
+                        p.rect_filled(caixa, R_SM(), Color32::BLACK);
+                        match sel.texturas.get(k).and_then(|t| t.as_ref()) {
+                            Some(tex) => {
+                                // encaixa sem esticar
+                                let ts = tex.size_vec2();
+                                let esc = (caixa.width() / ts.x).min(caixa.height() / ts.y);
+                                let img = Rect::from_center_size(caixa.center(), ts * esc);
+                                p.image(tex.id(), img, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                            }
+                            None => ui::icon(ui, if f.escolha.janela { ic!("screen") } else { ic!("screen") }, caixa.center(), 28.0, FAINT()),
+                        }
+                        ui::clip(p, Pos2::new(cart.left() + 10.0, cart.bottom() - 16.0), Align2::LEFT_CENTER, &f.nome, f7(12.5), INK(), cw - 20.0);
+                        if resp.clicked() {
+                            escolhida = Some(f.escolha);
+                        }
+                    }
+                }
+            });
+        }
+        if xr.clicked() || (fundo.clicked() && !ui.input(|i| i.pointer.interact_pos()).is_some_and(|q| r.contains(q))) || ui.input(|i| i.key_pressed(Key::Escape)) {
+            fechar = true;
+        }
+    });
+    if let Some(e) = escolhida {
+        if let Some(v) = &st.voz {
+            v.mandar(voz::Cmd::Tela(Some((st.tela_modo, Some(e)))));
+        }
+        fechar = true;
+    }
+    if fechar {
+        st.seletor = None;
+    }
 }

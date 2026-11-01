@@ -61,6 +61,8 @@ pub struct CallState {
     /// O menu de "Mostrar a tela" (Qualidade ou Fluidez) e o último modo escolhido (o da tecla S).
     tela_menu: Option<Pos2>,
     tela_modo: voz::Modo,
+    /// O seletor de tela do app (Windows e Linux em X11): as telas e janelas (carregando) e a aba aberta.
+    seletor: Option<acoes::Seletor>,
     convite: Option<Convite>,
     emotes_abertos: bool,
     emote_q: String,
@@ -122,6 +124,7 @@ impl Default for CallState {
             lol_menu: None,
             tela_menu: None,
             tela_modo: voz::Modo::default(),
+            seletor: None,
             convite: None,
             emotes_abertos: false,
             emote_q: String::new(),
@@ -165,6 +168,18 @@ impl CallState {
     /// Abre o cartão de uma pessoa ao lado da coluna de pessoas (a busca do topo usa).
     pub fn abrir_cartao(&mut self, id: usize) {
         self.card = Some((id, Pos2::new(1600.0 - 270.0 - 8.0 - 260.0, 120.0)));
+    }
+
+    /// Começa a mostrar a tela no modo dado: no Wayland o seletor do sistema pergunta qual; nos outros abre o do app.
+    fn comecar_tela(&mut self, ctx: &egui::Context, modo: voz::Modo) {
+        self.tela_modo = modo;
+        if voz::seletor_do_sistema() {
+            if let Some(v) = &self.voz {
+                v.mandar(voz::Cmd::Tela(Some((modo, None))));
+            }
+        } else if self.voz.is_some() {
+            self.seletor = Some(acoes::Seletor::abrir(ctx));
+        }
     }
 
     /// O id público da sala aberta.
@@ -533,6 +548,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut CallState, body: Rect, t: f64, _geracao:
         if let Some(ch) = st.joined {
             stage(ui, st, body, ch, t);
             acoes::menus(ui, st, t);
+            acoes::seletor_tela(ui, st, body);
             acoes::atalhos(ui, st);
             st.toast.show(ui, t);
             return;
@@ -557,6 +573,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut CallState, body: Rect, t: f64, _geracao:
     acoes::cartao(ui, st, body);
     acoes::menus(ui, st, t);
     acoes::convite(ui, st, body, t);
+    acoes::seletor_tela(ui, st, body);
     acoes::atalhos(ui, st);
     st.toast.show(ui, t);
 }
