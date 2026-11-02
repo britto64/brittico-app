@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/olheiro-core", "crates/olheiro-voz", "crates/olheiro-motor"]
+members = [".", "crates/olheiro-core", "crates/olheiro-voz", "crates/olheiro-motor", "crates/tela-hw"]
 
 [workspace.package]
 version = "0.2.4"
@@ -40,6 +40,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time",
 futures-util = { version = "0.3", default-features = false }
 # o LoL de proximidade: o motor do Olheiro (leitura do LoL, sala de voz, som), agora dentro deste repositório (crates/)
 olheiro-motor = { path = "crates/olheiro-motor" }
+
+# H.264 da tela por hardware no Windows (Media Foundation). Nos outros sistemas o crate não codifica.
+tela-hw = { path = "crates/tela-hw" }
 
 # o cursor do mouse na tela mostrada (a captura do LiveKit no Windows não o desenha): GetCursorInfo/GetIconInfo/GetDIBits
 [target.'cfg(windows)'.dependencies]

@@ -2,6 +2,7 @@
 //! (`POST /api/diskenzy/v2/voice/:canal/token`, a mesma rota do site). O som do PC é o do Olheiro (`olheiro_motor::som`):
 //! o microfone limpo pelo WebRTC e a mistura de quem fala, com volume por pessoa. O vídeo que chega (a tela e a câmera de
 //! cada um) vira quadros RGBA que a tela sobe para textura; a própria tela sai pelo capturador do libwebrtc.
+//! No Windows, se houver um MFT H.264 de hardware, a tela é codificada na GPU e publicada já em H.264.
 //!
 //! Tudo roda num runtime do tokio numa thread própria; a tela manda `Cmd` e lê o `Estado`.
 
@@ -492,17 +493,272 @@ async fn rodar(token_path: String, entrada: Option<(String, String)>, mic: Strin
     });
 }
 
+/// BGRA do capturador → I420, com o cursor (Windows), a escala e a prévia de quem mostra.
+struct Montagem {
+    alt: u32,
+    eu: i64,
+    log: bool,
+    contados: u64,
+    desde: std::time::Instant,
+    ultima_previa: std::time::Instant,
+    estado: Arc<Mutex<Estado>>,
+    ctx: eframe::egui::Context,
+    #[cfg(windows)]
+    cursor: super::cursor::Cursor,
+    #[cfg(windows)]
+    janela: Option<u64>,
+}
+
+impl Montagem {
+    fn nova(alt: u32, eu: i64, log: bool, estado: Arc<Mutex<Estado>>, ctx: eframe::egui::Context, janela: Option<u64>) -> Self {
+        #[cfg(not(windows))]
+        let _ = janela;
+        Self {
+            alt,
+            eu,
+            log,
+            contados: 0,
+            desde: std::time::Instant::now(),
+            ultima_previa: std::time::Instant::now() - std::time::Duration::from_secs(1),
+            estado,
+            ctx,
+            #[cfg(windows)]
+            cursor: super::cursor::Cursor::default(),
+            #[cfg(windows)]
+            janela,
+        }
+    }
+
+    fn i420(&mut self, dados: &[u8], stride: u32, w: u32, h: u32, esquerda: i32, topo: i32) -> Option<I420Buffer> {
+        let (w, h) = (w & !1, h & !1);
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let mut buf = I420Buffer::new(w, h);
+        let (sy, su, sv) = buf.strides();
+        let (dy, du, dv) = buf.data_mut();
+        livekit::webrtc::native::yuv_helper::argb_to_i420(dados, stride, dy, sy, du, su, dv, sv, w as i32, h as i32);
+        #[cfg(windows)]
+        if let Some((x0, y0, pw, ph, px)) = self.cursor.retalho(dados, stride as usize, w as i32, h as i32, super::cursor::origem(self.janela, (esquerda, topo))) {
+            // o retalho com o cursor, em I420, por cima do quadro
+            let mut rb = I420Buffer::new(pw as u32, ph as u32);
+            let (rsy, rsu, rsv) = rb.strides();
+            let (ry, ru, rv) = rb.data_mut();
+            livekit::webrtc::native::yuv_helper::argb_to_i420(&px, (pw * 4) as u32, ry, rsy, ru, rsu, rv, rsv, pw, ph);
+            let (sy, su, sv) = buf.strides();
+            let (dy, du, dv) = buf.data_mut();
+            let (x0, y0, pw, ph) = (x0 as usize, y0 as usize, pw as usize, ph as usize);
+            for y in 0..ph {
+                dy[(y0 + y) * sy as usize + x0..(y0 + y) * sy as usize + x0 + pw].copy_from_slice(&ry[y * rsy as usize..y * rsy as usize + pw]);
+            }
+            for y in 0..ph / 2 {
+                let (d, o) = ((y0 / 2 + y) * su as usize + x0 / 2, y * rsu as usize);
+                du[d..d + pw / 2].copy_from_slice(&ru[o..o + pw / 2]);
+                let (d, o) = ((y0 / 2 + y) * sv as usize + x0 / 2, y * rsv as usize);
+                dv[d..d + pw / 2].copy_from_slice(&rv[o..o + pw / 2]);
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = (esquerda, topo);
+        if h > self.alt {
+            let nw = ((w as u64 * self.alt as u64 / h as u64) as i32) & !1;
+            buf = buf.scale(nw, self.alt as i32);
+        }
+        if self.ultima_previa.elapsed() >= std::time::Duration::from_millis(100) {
+            self.ultima_previa = std::time::Instant::now();
+            use livekit::webrtc::video_frame::native::VideoFrameBufferExt;
+            use livekit::webrtc::video_frame::VideoBuffer;
+            let (bw, bh) = (buf.width() as i32, buf.height() as i32);
+            let pw = bw.min(960) & !1;
+            let ph = ((bh as i64 * pw as i64 / bw.max(1) as i64) as i32) & !1;
+            if pw > 0 && ph > 0 {
+                let menor = buf.scale(pw, ph);
+                let (w2, h2) = (pw as usize, ph as usize);
+                let mut rgba = vec![0u8; w2 * h2 * 4];
+                menor.to_argb(livekit::webrtc::video_frame::VideoFormatType::ABGR, &mut rgba, (w2 * 4) as u32, pw, ph);
+                if let Ok(mut e) = self.estado.lock() {
+                    let n = e.videos.get(&(self.eu, true)).map_or(1, |q| q.n + 1);
+                    e.videos.insert((self.eu, true), Quadro { w: w2, h: h2, rgba, n });
+                }
+                self.ctx.request_repaint();
+            }
+        }
+        if self.log {
+            self.contados += 1;
+            if self.desde.elapsed() >= std::time::Duration::from_secs(2) {
+                eprintln!("[voz] tela: {:.1} quadros/s capturados ({w}x{h})", self.contados as f64 / self.desde.elapsed().as_secs_f64());
+                self.contados = 0;
+                self.desde = std::time::Instant::now();
+            }
+        }
+        Some(buf)
+    }
+}
+
+/// Codifica o I420 na GPU e, depois que a faixa foi publicada, manda o H.264 para o LiveKit.
+#[cfg(windows)]
+struct EstadoHw {
+    fonte: NativeVideoSource,
+    cod: Option<tela_hw::Codificador>,
+    publicado: Arc<std::sync::atomic::AtomicBool>,
+    fps_mili: Arc<std::sync::atomic::AtomicU32>,
+    fps: u32,
+    bitrate: u64,
+    teto: u64,
+    log: bool,
+    viu_chave: bool,
+    encaminhar: bool,
+    sem_saida: u32,
+    anunciado: bool,
+}
+
+#[cfg(windows)]
+impl EstadoHw {
+    fn novo(fonte: NativeVideoSource, fps: u32, bitrate: u64, publicado: Arc<std::sync::atomic::AtomicBool>, fps_mili: Arc<std::sync::atomic::AtomicU32>, log: bool) -> Self {
+        Self { fonte, cod: None, publicado, fps_mili, fps: fps.max(1), bitrate, teto: bitrate, log, viu_chave: false, encaminhar: false, sem_saida: 0, anunciado: false }
+    }
+
+    /// `Ok(true)` quando já saiu um quadro chave (a captura pode ser publicada).
+    fn tratar(&mut self, buf: &I420Buffer) -> Result<bool, String> {
+        let (w, h) = (buf.width(), buf.height());
+        if w < 2 || h < 2 {
+            return Ok(self.viu_chave);
+        }
+        if self.cod.as_ref().map_or(true, |c| c.largura() != w || c.altura() != h) {
+            let cod = tela_hw::Codificador::abrir(w, h, self.fps, self.bitrate, self.teto)?;
+            if self.log && !self.anunciado {
+                let gpu = tela_hw::fornecedor_gpu().unwrap_or("GPU");
+                eprintln!("[voz] tela: H.264 por hardware ({}, {gpu}), {w}x{h}, teto {} Mbps, sem simulcast", cod.nome(), self.teto / 1_000_000);
+                self.anunciado = true;
+            }
+            self.cod = Some(cod);
+            self.encaminhar = false;
+        }
+        let nv = i420_nv12(buf);
+        let mut forcar = self.publicado.load(Ordering::Acquire) && !self.encaminhar;
+        let mut novo_bitrate = None;
+        if self.publicado.load(Ordering::Acquire) {
+            if self.fonte.take_keyframe_request() {
+                forcar = true;
+            }
+            if let Some(rc) = self.fonte.take_rate_control_request() {
+                if rc.target_bitrate_bps > 0 {
+                    novo_bitrate = Some(rc.target_bitrate_bps);
+                }
+                // não sobe dos fps do modo; o teto de bitrate fica no codificador
+                if rc.framerate_fps.is_finite() && rc.framerate_fps >= 5.0 {
+                    let mili = (rc.framerate_fps.min(self.fps as f64) * 1000.0) as u32;
+                    self.fps_mili.store(mili.max(5_000), Ordering::Relaxed);
+                }
+            }
+        }
+        let quadros = {
+            let cod = self.cod.as_mut().unwrap();
+            if forcar {
+                cod.pedir_chave();
+            }
+            if let Some(b) = novo_bitrate {
+                cod.definir_bitrate(b);
+            }
+            cod.codificar(&nv)?
+        };
+        if quadros.is_empty() {
+            self.sem_saida += 1;
+            if self.sem_saida > self.fps.saturating_mul(3).max(30) {
+                return Err("não entregou um quadro a tempo".into());
+            }
+            return Ok(self.viu_chave);
+        }
+        self.sem_saida = 0;
+        if quadros.iter().any(|q| q.chave) {
+            self.viu_chave = true;
+        }
+        if !self.publicado.load(Ordering::Acquire) {
+            return Ok(self.viu_chave);
+        }
+        for q in &quadros {
+            if !self.encaminhar && !q.chave {
+                continue;
+            }
+            if !enviar_h264(&self.fonte, q, w, h) {
+                self.encaminhar = false;
+                if let Some(cod) = self.cod.as_mut() {
+                    cod.pedir_chave();
+                }
+                break;
+            }
+            if q.chave {
+                self.encaminhar = true;
+            }
+        }
+        Ok(true)
+    }
+}
+
+#[cfg(windows)]
+fn i420_nv12(buf: &I420Buffer) -> Vec<u8> {
+    let (w, h) = (buf.width(), buf.height());
+    let (sy, su, sv) = buf.strides();
+    let (y, u, v) = buf.data();
+    let mut nv = vec![0u8; (w as usize) * (h as usize) * 3 / 2];
+    let (dy, duv) = nv.split_at_mut((w as usize) * (h as usize));
+    livekit::webrtc::native::yuv_helper::i420_to_nv12(y, sy, u, su, v, sv, dy, w, duv, w, w as i32, h as i32);
+    nv
+}
+
+#[cfg(windows)]
+fn enviar_h264(fonte: &NativeVideoSource, acesso: &tela_hw::Acesso, w: u32, h: u32) -> bool {
+    use livekit::webrtc::video_frame::{EncodedFrameType, EncodedVideoCodec, EncodedVideoFrame};
+    fonte.capture_encoded_frame(&EncodedVideoFrame {
+        codec: EncodedVideoCodec::H264,
+        payload: &acesso.bytes,
+        timestamp_us: 0,
+        frame_type: if acesso.chave { EncodedFrameType::Key } else { EncodedFrameType::Delta },
+        resolution: VideoResolution { width: w, height: h },
+        frame_metadata: None,
+    })
+}
+
 /// Mostra a tela: o capturador do libwebrtc (no Windows a tela inteira; no Linux com Wayland o seletor do sistema)
 /// manda quadros BGRA, que viram I420 (no máximo 1080p) e saem por uma faixa de vídeo `Screenshare` no ritmo, no bitrate
-/// e com a preferência do `modo`.
+/// e com a preferência do `modo`. No Windows, com um MFT H.264 de hardware, o mesmo quadro é codificado na GPU e
+/// publicado já pronto (`PreEncoded`); se o hardware não existir ou falhar antes de publicar, volta ao VP8 de software.
 async fn mostrar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, fullhd: bool, estado: &Arc<Mutex<Estado>>, ctx: &eframe::egui::Context) -> Result<(LocalVideoTrack, std::sync::mpsc::SyncSender<()>), String> {
+    #[cfg(windows)]
+    if deixar_hardware() {
+        if tela_hw::tem_hardware() {
+            match publicar_tela(room, modo, escolha, fullhd, estado, ctx, true).await {
+                Ok(v) => return Ok(v),
+                Err(e) if e.starts_with("hw:") => {
+                    eprintln!("[voz] tela: H.264 por hardware indisponível ({}); seguindo no codificador de software", e.trim_start_matches("hw:").trim());
+                }
+                Err(e) => return Err(e),
+            }
+        } else if std::env::var("BRITTICO_VOZ_LOG").is_ok() {
+            eprintln!("[voz] tela: sem codificador H.264 de hardware; VP8 de software");
+        }
+    }
+    publicar_tela(room, modo, escolha, fullhd, estado, ctx, false).await
+}
+
+/// `BRITTICO_TELA_HW=0` (ou `nao`/`off`/`software`) fica no VP8. `BRITTICO_TELA_CODEC=vp8|vp9|av1` também: o hardware
+/// só fala H.264. O padrão sintético (`BRITTICO_TELA_TESTE`) continua medindo o codificador de software.
+#[cfg(windows)]
+fn deixar_hardware() -> bool {
+    if std::env::var("BRITTICO_TELA_TESTE").is_ok() {
+        return false;
+    }
+    if std::env::var("BRITTICO_TELA_HW").is_ok_and(|v| matches!(v.to_ascii_lowercase().as_str(), "0" | "nao" | "não" | "off" | "software")) {
+        return false;
+    }
+    !matches!(std::env::var("BRITTICO_TELA_CODEC").as_deref(), Ok("vp8" | "vp9" | "av1"))
+}
+
+async fn publicar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, fullhd: bool, estado: &Arc<Mutex<Estado>>, ctx: &eframe::egui::Context, hardware: bool) -> Result<(LocalVideoTrack, std::sync::mpsc::SyncSender<()>), String> {
     // a prévia da própria tela (como no site): uma cópia pequena, ~10 por segundo, no quadro de quem mostra
     let eu: i64 = room.local_participant().identity().to_string().parse().unwrap_or(0);
     let (est_previa, ctx_previa) = (estado.clone(), ctx.clone());
-    let mut ultima_previa = std::time::Instant::now() - std::time::Duration::from_secs(1);
     let log = std::env::var("BRITTICO_VOZ_LOG").is_ok();
-    let mut contados = 0u64;
-    let mut desde = std::time::Instant::now();
     use livekit::webrtc::desktop_capturer::{DesktopCaptureSourceType, DesktopCapturer, DesktopCapturerOptions};
     #[cfg(target_os = "linux")]
     let generico = if seletor_do_sistema() { DesktopCaptureSourceType::Generic } else { DesktopCaptureSourceType::Screen };
@@ -516,16 +772,18 @@ async fn mostrar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, fullhd:
     let mut opcoes = DesktopCapturerOptions::new(tipo);
     // no Windows quem desenha o cursor é o app (call/cursor.rs): pedir que a captura o embuta poderia dar dois cursores
     opcoes.set_include_cursor(!cfg!(windows));
-    #[cfg(windows)]
-    let mut cursor_win = super::cursor::Cursor::default();
-    #[cfg(windows)]
-    let janela_win = escolha.filter(|e| e.janela).map(|e| e.id);
     // o modo "conteúdo de tela" do libwebrtc fica DESLIGADO: com movimento rápido ele descarta quadros de propósito e
     // nem usa a banda que tem (medido: 2 a 4 fps com ~3 Mbps de 8). BRITTICO_TELA_SCREENCAST=1 e
-    // BRITTICO_TELA_CODEC=vp8|h264|vp9|av1 servem para medir.
+    // BRITTICO_TELA_CODEC=vp8|h264|vp9|av1 servem para medir. No Windows, sem codec (ou com h264) e com MFT de
+    // hardware, quem codifica é a GPU; vp8/vp9/av1 continuam no software, e h264 sem hardware também.
     let screencast = std::env::var("BRITTICO_TELA_SCREENCAST").is_ok_and(|v| v == "1");
     let alt = altura(fullhd);
-    let fonte = NativeVideoSource::new(VideoResolution { width: alt * 16 / 9, height: alt }, screencast);
+    let resolucao = VideoResolution { width: alt * 16 / 9, height: alt };
+    // o hardware publica unidade de acesso pronta: sem o quadro preto de keepalive, que acordaria um codificador de verdade
+    let fonte = if hardware { NativeVideoSource::new_encoded(resolucao) } else { NativeVideoSource::new(resolucao, screencast) };
+    let fps_mili = Arc::new(std::sync::atomic::AtomicU32::new((modo.fps() * 1000.0) as u32));
+    let publicado = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let erro_hw: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let faixa = LocalVideoTrack::create_video_track("tela", RtcVideoSource::Native(fonte.clone()));
     let (parar_tx, parar_rx) = std::sync::mpsc::sync_channel::<()>(0);
     let (pronto_tx, pronto_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
@@ -535,12 +793,17 @@ async fn mostrar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, fullhd:
     let pelo_sistema = escolha.is_none() && seletor_do_sistema();
     // o capturador não pode mudar de thread: vive numa só, pedindo um quadro a cada 1/fps até a faixa sair
     let intervalo = std::time::Duration::from_secs_f64(1.0 / modo.fps());
-    if std::env::var("BRITTICO_TELA_TESTE").is_ok() {
+    // no erro do hardware a thread tem que terminar antes da tentativa em software, para soltar a captura DXGI
+    let captura = if std::env::var("BRITTICO_TELA_TESTE").is_ok() {
         // BRITTICO_TELA_TESTE: no lugar da tela, uma de mentira com muito movimento (uma "janela" de textura arrastada
         // pela tela inteira), para medir o codificador sem depender do seletor nem do que está aberto
         tela_de_teste(fonte.clone(), parar_rx, pronto_tx, intervalo, alt);
+        None
     } else {
-    std::thread::Builder::new()
+    #[cfg(windows)]
+    let publicado_thr = publicado.clone();
+    let viu_cru = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    Some(std::thread::Builder::new()
         .name("call-tela".into())
         .spawn(move || {
             let Some(mut cap) = DesktopCapturer::new(opcoes) else {
@@ -558,6 +821,12 @@ async fn mostrar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, fullhd:
                 },
                 None => lista.into_iter().next(),
             };
+            let mut montagem = Montagem::nova(alt, eu, log, est_previa, ctx_previa, escolha.filter(|e| e.janela).map(|e| e.id));
+            #[cfg(windows)]
+            let mut hw = hardware.then(|| EstadoHw::novo(fonte.clone(), modo.fps() as u32, modo.bitrate(), publicado_thr, fps_mili.clone(), log));
+            #[cfg(windows)]
+            let erro_cb = erro_hw.clone();
+            let viu = viu_cru.clone();
             cap.start_capture(fonte_escolhida, move |r| {
                 let q = match r {
                     Ok(q) => q,
@@ -570,78 +839,43 @@ async fn mostrar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, fullhd:
                     Err(_) => return,
                 };
                 let (w, h) = (q.width() as u32 & !1, q.height() as u32 & !1);
-                if w == 0 || h == 0 {
-                    return;
-                }
-                let mut buf = I420Buffer::new(w, h);
-                let (sy, su, sv) = buf.strides();
-                let (dy, du, dv) = buf.data_mut();
-                livekit::webrtc::native::yuv_helper::argb_to_i420(q.data(), q.stride(), dy, sy, du, su, dv, sv, w as i32, h as i32);
+                let Some(buf) = montagem.i420(q.data(), q.stride(), q.width() as u32, q.height() as u32, q.left(), q.top()) else { return };
+                viu.store(true, Ordering::Relaxed);
                 #[cfg(windows)]
-                if let Some((x0, y0, pw, ph, px)) = cursor_win.retalho(q.data(), q.stride() as usize, w as i32, h as i32, super::cursor::origem(janela_win, (q.left(), q.top()))) {
-                    // o retalho com o cursor, em I420, por cima do quadro
-                    let mut rb = I420Buffer::new(pw as u32, ph as u32);
-                    let (rsy, rsu, rsv) = rb.strides();
-                    let (ry, ru, rv) = rb.data_mut();
-                    livekit::webrtc::native::yuv_helper::argb_to_i420(&px, (pw * 4) as u32, ry, rsy, ru, rsu, rv, rsv, pw, ph);
-                    let (sy, su, sv) = buf.strides();
-                    let (dy, du, dv) = buf.data_mut();
-                    let (x0, y0, pw, ph) = (x0 as usize, y0 as usize, pw as usize, ph as usize);
-                    for y in 0..ph {
-                        dy[(y0 + y) * sy as usize + x0..(y0 + y) * sy as usize + x0 + pw].copy_from_slice(&ry[y * rsy as usize..y * rsy as usize + pw]);
-                    }
-                    for y in 0..ph / 2 {
-                        let (d, o) = ((y0 / 2 + y) * su as usize + x0 / 2, y * rsu as usize);
-                        du[d..d + pw / 2].copy_from_slice(&ru[o..o + pw / 2]);
-                        let (d, o) = ((y0 / 2 + y) * sv as usize + x0 / 2, y * rsv as usize);
-                        dv[d..d + pw / 2].copy_from_slice(&rv[o..o + pw / 2]);
-                    }
-                }
-                if h > alt {
-                    let nw = ((w as u64 * alt as u64 / h as u64) as i32) & !1;
-                    buf = buf.scale(nw, alt as i32);
-                }
-                if ultima_previa.elapsed() >= std::time::Duration::from_millis(100) {
-                    ultima_previa = std::time::Instant::now();
-                    use livekit::webrtc::video_frame::native::VideoFrameBufferExt;
-                    use livekit::webrtc::video_frame::VideoBuffer;
-                    let (bw, bh) = (buf.width() as i32, buf.height() as i32);
-                    let pw = bw.min(960) & !1;
-                    let ph = ((bh as i64 * pw as i64 / bw.max(1) as i64) as i32) & !1;
-                    if pw > 0 && ph > 0 {
-                        let menor = buf.scale(pw, ph);
-                        let (w2, h2) = (pw as usize, ph as usize);
-                        let mut rgba = vec![0u8; w2 * h2 * 4];
-                        menor.to_argb(livekit::webrtc::video_frame::VideoFormatType::ABGR, &mut rgba, (w2 * 4) as u32, pw, ph);
-                        if let Ok(mut e) = est_previa.lock() {
-                            let n = e.videos.get(&(eu, true)).map_or(1, |q| q.n + 1);
-                            e.videos.insert((eu, true), Quadro { w: w2, h: h2, rgba, n });
+                if let Some(hw) = hw.as_mut() {
+                    match hw.tratar(&buf) {
+                        Ok(true) => {
+                            if sit.compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed).is_ok() && log {
+                                eprintln!("[voz] tela: primeiro quadro H.264 {w}x{h}");
+                            }
                         }
-                        ctx_previa.request_repaint();
+                        Ok(false) => {}
+                        Err(e) => {
+                            if let Ok(mut g) = erro_cb.lock() {
+                                *g = Some(format!("hw:{e}"));
+                            }
+                            sit.store(3, Ordering::Relaxed);
+                        }
                     }
-                }
-                if log {
-                    contados += 1;
-                    if desde.elapsed() >= std::time::Duration::from_secs(2) {
-                        eprintln!("[voz] tela: {:.1} quadros/s capturados ({w}x{h})", contados as f64 / desde.elapsed().as_secs_f64());
-                        contados = 0;
-                        desde = std::time::Instant::now();
-                    }
+                    return;
                 }
                 let quadro = VideoFrame { rotation: VideoRotation::VideoRotation0, timestamp_us: 0, frame_metadata: None, buffer: buf };
                 fonte.capture_frame(&quadro);
-                if sit.compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed).is_ok() && std::env::var("BRITTICO_VOZ_LOG").is_ok() {
+                if sit.compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed).is_ok() && log {
                     eprintln!("[voz] tela: primeiro quadro {w}x{h}");
                 }
             });
             // só diz que começou quando o primeiro quadro chega: no Wayland isso é depois de a pessoa escolher no
-            // seletor do sistema (que pode levar o tempo dela); se ela cancelar, a tela nem entra na call
+            // seletor do sistema (que pode levar o tempo dela); se ela cancelar, a tela nem entra na call.
+            // no hardware, "chegou quadro" é o primeiro H.264 chave (3 = o codificador falhou, e a Call volta ao VP8)
             let mut pronto_tx = Some(pronto_tx);
             let prazo = std::time::Instant::now() + std::time::Duration::from_secs(if pelo_sistema { 180 } else { 20 });
-            // o relógio marca a hora de cada quadro; se um atrasar, o próximo não tenta compensar em rajada
+            // o relógio marca a hora de cada quadro; se um atrasar, o próximo não tenta compensar em rajada.
+            // o hardware pode baixar o ritmo quando o LiveKit pede (sem passar dos fps do modo)
             let mut proximo = std::time::Instant::now();
             loop {
-                proximo += intervalo;
+                let mili = fps_mili.load(Ordering::Relaxed).max(1_000);
+                proximo += std::time::Duration::from_secs_f64(1000.0 / mili as f64);
                 let agora = std::time::Instant::now();
                 if proximo < agora {
                     proximo = agora;
@@ -653,43 +887,73 @@ async fn mostrar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, fullhd:
                 if pronto_tx.is_some() {
                     let erro = match situacao.load(Ordering::Relaxed) {
                         1 => None,
-                        2 => Some(if pelo_sistema { "A tela não foi escolhida." } else { "Não deu para capturar essa tela." }),
-                        _ if std::time::Instant::now() > prazo => Some("A captura da tela não começou."),
+                        3 => Some(erro_hw.lock().ok().and_then(|g| g.clone()).unwrap_or_else(|| "hw:codificador".into())),
+                        2 => Some(if pelo_sistema { "A tela não foi escolhida." } else { "Não deu para capturar essa tela." }.to_owned()),
+                        // sem quadro nenhum, a captura não começou (não adianta tentar de novo no outro codificador).
+                        // com quadro cru e sem H.264, o hardware falhou e a Call volta ao VP8
+                        _ if std::time::Instant::now() > prazo => Some(if hardware && viu_cru.load(Ordering::Relaxed) { "hw:o codificador não entregou um quadro a tempo" } else { "A captura da tela não começou." }.to_owned()),
                         _ => continue,
                     };
                     let falhou = erro.is_some();
-                    let _ = pronto_tx.take().unwrap().send(erro.map_or(Ok(()), |e| Err(e.to_owned())));
+                    let _ = pronto_tx.take().unwrap().send(erro.map_or(Ok(()), Err));
                     if falhou {
                         break;
                     }
                 }
             }
         })
-        .map_err(|e| e.to_string())?;
-    }
+        .map_err(|e| e.to_string())?)
+    };
     match pronto_rx.await {
         Ok(Ok(())) => {}
-        Ok(Err(e)) => return Err(e),
-        Err(_) => return Err("A captura da tela não começou.".into()),
+        Ok(Err(e)) => {
+            if let Some(h) = captura {
+                let _ = h.join();
+            }
+            return Err(e);
+        }
+        Err(_) => {
+            if let Some(h) = captura {
+                let _ = h.join();
+            }
+            return Err("A captura da tela não começou.".into());
+        }
     }
-    let publicar = TrackPublishOptions {
-        source: TrackSource::Screenshare,
-        video_codec: match std::env::var("BRITTICO_TELA_CODEC").as_deref() {
-            Ok("h264") => VideoCodec::H264,
-            Ok("vp9") => VideoCodec::VP9,
-            Ok("av1") => VideoCodec::AV1,
-            _ => VideoCodec::VP8,
-        },
-        // três camadas, como o site (`voice-presets.js`): a miniatura e a média saem junto com a cheia, e o servidor
-        // manda para cada pessoa a que cabe no quadro dela; na conta da porta da Contabo é o que faz caber 7 pessoas
-        // com 4 telas
-        simulcast: std::env::var("BRITTICO_TELA_SIMULCAST").map_or(true, |v| v != "0"),
-        simulcast_layers: Some(camadas(modo, fullhd)),
-        video_encoding: Some(VideoEncoding { max_bitrate: modo.bitrate(), max_framerate: modo.fps() }),
-        degradation_preference: Some(modo.degradar()),
-        ..Default::default()
+    // no hardware o teto continua o do modo (12 Mbps). O pré-codificado é uma camada só: o SDK não fabrica a
+    // miniatura nem a média a partir de um H.264 já pronto, então não há simulcast nessa faixa.
+    let publicar = if hardware {
+        TrackPublishOptions {
+            source: TrackSource::Screenshare,
+            video_codec: VideoCodec::H264,
+            video_encoder: livekit::webrtc::rtp_sender::VideoEncoderBackend::PreEncoded,
+            simulcast: false,
+            simulcast_layers: None,
+            video_encoding: Some(VideoEncoding { max_bitrate: modo.bitrate(), max_framerate: modo.fps() }),
+            degradation_preference: Some(modo.degradar()),
+            ..Default::default()
+        }
+    } else {
+        TrackPublishOptions {
+            source: TrackSource::Screenshare,
+            video_codec: match std::env::var("BRITTICO_TELA_CODEC").as_deref() {
+                Ok("h264") => VideoCodec::H264,
+                Ok("vp9") => VideoCodec::VP9,
+                Ok("av1") => VideoCodec::AV1,
+                _ => VideoCodec::VP8,
+            },
+            // três camadas, como o site (`voice-presets.js`): a miniatura e a média saem junto com a cheia, e o servidor
+            // manda para cada pessoa a que cabe no quadro dela; na conta da porta da Contabo é o que faz caber 7 pessoas
+            // com 4 telas
+            simulcast: std::env::var("BRITTICO_TELA_SIMULCAST").map_or(true, |v| v != "0"),
+            simulcast_layers: Some(camadas(modo, fullhd)),
+            video_encoding: Some(VideoEncoding { max_bitrate: modo.bitrate(), max_framerate: modo.fps() }),
+            degradation_preference: Some(modo.degradar()),
+            ..Default::default()
+        }
     };
     room.local_participant().publish_track(LocalTrack::Video(faixa.clone()), publicar).await.map_err(|e| format!("Não consegui mostrar a tela ({e})."))?;
+    // só a partir daqui os quadros H.264 vão para a faixa: o primeiro que sai depois disso é chave
+    publicado.store(true, Ordering::Release);
     if log {
         // o que o codificador fez e o que saiu pela rede, a cada 2 s, enquanto a faixa existir
         let f2 = faixa.clone();
