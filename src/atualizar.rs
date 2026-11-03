@@ -79,12 +79,14 @@ impl Tipo {
             Tipo::Outro => None,
         }
     }
-    /// Dá para trocar sozinho (senão o botão só abre a página). Desligado em 2026-11-01, a pedido dele: sem assinatura
-    /// digital, o Windows bloqueia o instalador que o app baixa e roda ("não foi possível confirmar quem assinou").
-    /// O aviso leva à página de download do site. A troca sozinha continua aqui para quando houver assinatura
-    /// (`BRITTICO_ATUALIZAR_SOZINHO=1` liga, para testes).
+    /// Dá para trocar sozinho (senão o botão só abre a página). No Windows está desligado desde 2026-11-01, a pedido
+    /// dele: sem assinatura digital, o Windows bloqueia o instalador que o app baixa e roda ("não foi possível
+    /// confirmar quem assinou"); o aviso leva à página de download do site (`BRITTICO_ATUALIZAR_SOZINHO=1` liga, para
+    /// testes). O AppImage troca sozinho (2026-11-03): baixar à mão faz o AppImageLauncher, que dá nome pelo conteúdo
+    /// do arquivo, criar um app novo a cada versão ("Brittico (1)", "Brittico (2)"); trocando no mesmo caminho, o
+    /// atalho é o mesmo.
     pub fn sozinho(&self) -> bool {
-        self.arquivo().is_some() && std::env::var("BRITTICO_ATUALIZAR_SOZINHO").is_ok_and(|v| v == "1")
+        matches!(self, Tipo::AppImage(_)) || (self.arquivo().is_some() && std::env::var("BRITTICO_ATUALIZAR_SOZINHO").is_ok_and(|v| v == "1"))
     }
 }
 
