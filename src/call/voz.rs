@@ -33,12 +33,83 @@ pub enum Conexao {
     Saiu,
 }
 
-/// Um quadro de vídeo que chegou: largura, altura, RGBA e um número que sobe a cada quadro novo.
+/// Um quadro de vídeo que chegou: largura, altura, RGBA e um número que sobe a cada quadro novo. `borrado` é o print
+/// parado de uma tela que não está selecionada (pequeno e desfocado; a tela sobe a textura esticada).
 pub struct Quadro {
     pub w: usize,
     pub h: usize,
     pub rgba: Vec<u8>,
     pub n: u64,
+    pub borrado: bool,
+}
+
+/// A largura do print borrado (a altura segue a proporção). Pequeno de propósito: esticado no quadro, já fica desfocado.
+const BORRADO_W: usize = 96;
+/// De quanto em quanto tempo o print de uma tela parada é tirado de novo, e quanto se espera por ele.
+const PRINT_DE_NOVO: std::time::Duration = std::time::Duration::from_secs(60);
+const PRINT_ESPERA: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// O quadro é (quase) todo preto: amostra uma grade de pontos.
+fn quase_preto(rgba: &[u8]) -> bool {
+    let n = rgba.len() / 4;
+    let passo = (n / 257).max(1);
+    (0..n).step_by(passo).all(|i| rgba[i * 4] < 12 && rgba[i * 4 + 1] < 12 && rgba[i * 4 + 2] < 12)
+}
+
+/// O print borrado de um quadro RGBA: média em blocos até `BORRADO_W` de largura e duas passadas de desfoque 3x3.
+fn borrar(w: usize, h: usize, rgba: &[u8]) -> (usize, usize, Vec<u8>) {
+    if w == 0 || h == 0 || rgba.len() < w * h * 4 {
+        return (w, h, rgba.to_vec());
+    }
+    let bw = BORRADO_W.min(w).max(1);
+    let bh = (h * bw / w).max(1);
+    let mut out = vec![0u8; bw * bh * 4];
+    for by in 0..bh {
+        let (y0, y1) = (by * h / bh, ((by + 1) * h / bh).max(by * h / bh + 1));
+        for bx in 0..bw {
+            let (x0, x1) = (bx * w / bw, ((bx + 1) * w / bw).max(bx * w / bw + 1));
+            let mut soma = [0u64; 4];
+            // amostra em passos de 2 (o resultado é desfocado de qualquer jeito; metade do trabalho)
+            let mut n = 0u64;
+            for y in (y0..y1).step_by(2) {
+                for x in (x0..x1).step_by(2) {
+                    let i = (y * w + x) * 4;
+                    for c in 0..4 {
+                        soma[c] += rgba[i + c] as u64;
+                    }
+                    n += 1;
+                }
+            }
+            let o = (by * bw + bx) * 4;
+            for c in 0..4 {
+                out[o + c] = (soma[c] / n.max(1)) as u8;
+            }
+            out[o + 3] = 255;
+        }
+    }
+    for _ in 0..2 {
+        let antes = out.clone();
+        for y in 0..bh {
+            for x in 0..bw {
+                let mut soma = [0u32; 3];
+                let mut n = 0u32;
+                for yy in y.saturating_sub(1)..(y + 2).min(bh) {
+                    for xx in x.saturating_sub(1)..(x + 2).min(bw) {
+                        let i = (yy * bw + xx) * 4;
+                        for c in 0..3 {
+                            soma[c] += antes[i + c] as u32;
+                        }
+                        n += 1;
+                    }
+                }
+                let o = (y * bw + x) * 4;
+                for c in 0..3 {
+                    out[o + c] = (soma[c] / n) as u8;
+                }
+            }
+        }
+    }
+    (bw, bh, out)
 }
 
 #[derive(Default)]
@@ -48,9 +119,12 @@ pub struct Estado {
     pub videos: HashMap<(i64, bool), Quadro>,
     /// Mostrando a própria tela agora.
     pub tela: bool,
-    /// A camada que cada vídeo que chega deve ter (0 miniatura, 2 cheia): a cheia só para a tela selecionada (o mesmo
-    /// que o site faz).
+    /// Como cada tela que chega deve vir: 2 = em tempo real (a selecionada, na camada cheia); 0 = parada, um print
+    /// borrado tirado de minuto em minuto, sem vídeo chegando (o mesmo que o site faz).
     pub qualidade: HashMap<(i64, bool), u8>,
+    /// As telas paradas que estão esperando o quadro do print. Fora disso, quadro de tela parada é descartado: com o
+    /// vídeo desligado o libwebrtc ainda entrega uns quadros pretos (até de 8x8), que apagariam o print.
+    pub esperando_print: std::collections::HashSet<(i64, bool)>,
     pub aviso: Option<String>,
 }
 
@@ -191,14 +265,11 @@ fn miniatura_de(bgra: &[u8], w: usize, h: usize, stride: usize) -> Option<(usize
     (!tudo_preto).then_some((mw, mh, out))
 }
 
-/// As camadas extras da tela (a cheia é a da faixa), as mesmas do site: a miniatura de 144p a 1 quadro por segundo (as
-/// telas não selecionadas, quando há mais de uma) e a média de 540p a 30, o degrau para onde a tela selecionada desce
-/// quando a banda aperta. Sem a média ela despencava para a miniatura a cada movimento (2026-11-01).
+/// A camada extra da tela (a cheia é a da faixa), a mesma do site: a média de 540p a 30, o degrau para onde a tela
+/// selecionada desce quando a banda aperta. A miniatura de 144p saiu (2026-11-03): a tela não selecionada não recebe
+/// vídeo, fica num print borrado tirado de minuto em minuto nesta camada.
 fn camadas(_modo: Modo, _fullhd: bool) -> Vec<VideoPreset> {
-    vec![
-        VideoPreset { width: 256, height: 144, encoding: VideoEncoding { max_bitrate: 100_000, max_framerate: 1.0 } },
-        VideoPreset { width: 960, height: 540, encoding: VideoEncoding { max_bitrate: 1_500_000, max_framerate: 30.0 } },
-    ]
+    vec![VideoPreset { width: 960, height: 540, encoding: VideoEncoding { max_bitrate: 1_500_000, max_framerate: 30.0 } }]
 }
 
 /// A altura da tela que sai: HD (720p, o padrão) ou Full HD (1080p). Maior que isso é reduzido.
@@ -241,7 +312,7 @@ impl Voz {
         let _ = self.tx.send(c);
     }
 
-    /// A camada deste vídeo: a cheia (tempo real) só para a tela selecionada; as outras, a miniatura de 1 quadro/s.
+    /// Tempo real (a camada cheia) só para a tela selecionada; as outras ficam paradas num print borrado.
     pub fn pedir_qualidade(&self, chave: (i64, bool), tempo_real: bool) {
         let q = if tempo_real { 2 } else { 0 };
         if let Ok(mut e) = self.estado.lock() {
@@ -366,19 +437,89 @@ async fn rodar(token_path: String, entrada: Option<(String, String)>, mic: Strin
     // as publicações de vídeo que chegam, para pedir a camada certa de cada uma
     let mut publicacoes: HashMap<(i64, bool), RemoteTrackPublication> = HashMap::new();
     let mut aplicada: HashMap<(i64, bool), u8> = HashMap::new();
-    let mut relogio = tokio::time::interval(std::time::Duration::from_millis(500));
+    // as telas paradas: quando foi o último print e, enquanto um print novo é tirado, desde quando e o número do quadro
+    // que havia antes (o print chegou quando o número sobe)
+    let mut prints: HashMap<(i64, bool), std::time::Instant> = HashMap::new();
+    let mut tirando: HashMap<(i64, bool), (std::time::Instant, u64)> = HashMap::new();
+    let mut relogio = tokio::time::interval(std::time::Duration::from_millis(250));
     loop {
         tokio::select! {
             _ = relogio.tick() => {
                 let pedidas: Vec<((i64, bool), u8)> = estado.lock().map(|e| e.qualidade.iter().map(|(k, v)| (*k, *v)).collect()).unwrap_or_default();
+                let agora = std::time::Instant::now();
                 for (k, q) in pedidas {
-                    if aplicada.get(&k) == Some(&q) {
+                    let Some(p) = publicacoes.get(&k) else { continue };
+                    if !p.is_subscribed() {
                         continue;
                     }
-                    if let Some(p) = publicacoes.get(&k) {
-                        if p.simulcasted() {
-                            p.set_video_quality(if q == 0 { VideoQuality::Low } else { VideoQuality::High });
+                    if q != 0 {
+                        // tempo real: o vídeo volta, na camada cheia
+                        if aplicada.get(&k) != Some(&q) {
+                            if std::env::var("BRITTICO_VOZ_LOG").is_ok() {
+                                eprintln!("[voz] tela de {}: tempo real", k.0);
+                            }
+                            if let Ok(mut e) = estado.lock() {
+                                e.esperando_print.remove(&k);
+                            }
+                            p.set_enabled(true);
+                            if p.simulcasted() {
+                                p.set_video_quality(VideoQuality::High);
+                            }
                             aplicada.insert(k, q);
+                            tirando.remove(&k);
+                        }
+                        continue;
+                    }
+                    let n_agora = estado.lock().ok().and_then(|e| e.videos.get(&k).map(|v| v.n)).unwrap_or(0);
+                    if aplicada.get(&k) != Some(&0) {
+                        // acabou de sair do tempo real: a última imagem vira o print, sem pedir vídeo de novo
+                        let tem = estado.lock().ok().is_some_and(|mut e| match e.videos.get_mut(&k) {
+                            Some(v) if v.borrado => true,
+                            Some(v) if v.w >= 64 && v.h >= 36 && !quase_preto(&v.rgba) => {
+                                let (w, h, rgba) = borrar(v.w, v.h, &v.rgba);
+                                *v = Quadro { w, h, rgba, n: v.n + 1, borrado: true };
+                                true
+                            }
+                            _ => false,
+                        });
+                        aplicada.insert(k, 0);
+                        if std::env::var("BRITTICO_VOZ_LOG").is_ok() {
+                            eprintln!("[voz] tela de {}: parada ({})", k.0, if tem { "a última imagem virou o print" } else { "sem imagem ainda" });
+                        }
+                        if tem {
+                            p.set_enabled(false);
+                            prints.insert(k, agora);
+                            tirando.remove(&k);
+                        }
+                        ctx.request_repaint();
+                    }
+                    match tirando.get(&k).copied() {
+                        Some((desde, n0)) => {
+                            // o print chegou (ou passou o tempo): o vídeo para de novo
+                            if n_agora > n0 || agora - desde > PRINT_ESPERA {
+                                if std::env::var("BRITTICO_VOZ_LOG").is_ok() {
+                                    eprintln!("[voz] tela de {}: {} (vídeo desligado)", k.0, if n_agora > n0 { "print novo" } else { "print não chegou a tempo" });
+                                }
+                                if let Ok(mut e) = estado.lock() {
+                                    e.esperando_print.remove(&k);
+                                }
+                                p.set_enabled(false);
+                                prints.insert(k, agora);
+                                tirando.remove(&k);
+                            }
+                        }
+                        None => {
+                            if prints.get(&k).map_or(true, |t| agora - *t >= PRINT_DE_NOVO) {
+                                // tirar um print: liga o vídeo na camada menor (540p) até chegar um quadro
+                                if let Ok(mut e) = estado.lock() {
+                                    e.esperando_print.insert(k);
+                                }
+                                p.set_enabled(true);
+                                if p.simulcasted() {
+                                    p.set_video_quality(VideoQuality::Low);
+                                }
+                                tirando.insert(k, (agora, n_agora));
+                            }
                         }
                     }
                 }
@@ -405,6 +546,8 @@ async fn rodar(token_path: String, entrada: Option<(String, String)>, mic: Strin
                                 let e_tela = publication.source() == TrackSource::Screenshare;
                                 publicacoes.insert((id, e_tela), publication.clone());
                                 aplicada.remove(&(id, e_tela));
+                                prints.remove(&(id, e_tela));
+                                tirando.remove(&(id, e_tela));
                                 let (est, c) = (estado.clone(), ctx.clone());
                                 tokio::spawn(async move {
                                     let mut fluxo = NativeVideoStream::new(v.rtc_track());
@@ -418,8 +561,16 @@ async fn rodar(token_path: String, entrada: Option<(String, String)>, mic: Strin
                                         if w == 0 || h == 0 { continue; }
                                         let mut rgba = vec![0u8; w * h * 4];
                                         f.buffer.to_argb(livekit::webrtc::video_frame::VideoFormatType::ABGR, &mut rgba, (w * 4) as u32, w as i32, h as i32);
-                                        n += 1;
-                                        if let Ok(mut e) = est.lock() { e.videos.insert((id, e_tela), Quadro { w, h, rgba, n }); }
+                                        // a tela parada (não selecionada) só aceita o quadro do print, que vira o borrado;
+                                        // quadro preto ou minúsculo (o que o libwebrtc entrega com o vídeo desligado) não conta
+                                        let (parada, esperando) = est.lock().map(|e| (e_tela && e.qualidade.get(&(id, e_tela)) == Some(&0), e.esperando_print.contains(&(id, e_tela)))).unwrap_or((false, false));
+                                        if parada && (!esperando || w < 64 || h < 36 || quase_preto(&rgba)) { continue; }
+                                        let (w, h, rgba) = if parada { borrar(w, h, &rgba) } else { (w, h, rgba) };
+                                        if let Ok(mut e) = est.lock() {
+                                            if parada { e.esperando_print.remove(&(id, e_tela)); }
+                                            n = n.max(e.videos.get(&(id, e_tela)).map_or(0, |q| q.n)) + 1;
+                                            e.videos.insert((id, e_tela), Quadro { w, h, rgba, n, borrado: parada });
+                                        }
                                         c.request_repaint();
                                     }
                                     if let Ok(mut e) = est.lock() { e.videos.remove(&(id, e_tela)); }
@@ -434,6 +585,8 @@ async fn rodar(token_path: String, entrada: Option<(String, String)>, mic: Strin
                             let e_tela = publication.source() == TrackSource::Screenshare;
                             publicacoes.remove(&(id, e_tela));
                             aplicada.remove(&(id, e_tela));
+                            prints.remove(&(id, e_tela));
+                            tirando.remove(&(id, e_tela));
                             mudar(&|s| { s.videos.remove(&(id, e_tela)); s.qualidade.remove(&(id, e_tela)); });
                         }
                     }
@@ -578,7 +731,7 @@ impl Montagem {
                 menor.to_argb(livekit::webrtc::video_frame::VideoFormatType::ABGR, &mut rgba, (w2 * 4) as u32, pw, ph);
                 if let Ok(mut e) = self.estado.lock() {
                     let n = e.videos.get(&(self.eu, true)).map_or(1, |q| q.n + 1);
-                    e.videos.insert((self.eu, true), Quadro { w: w2, h: h2, rgba, n });
+                    e.videos.insert((self.eu, true), Quadro { w: w2, h: h2, rgba, n, borrado: false });
                 }
                 self.ctx.request_repaint();
             }
@@ -1254,4 +1407,32 @@ fn tela_de_teste(fonte: NativeVideoSource, parar_rx: std::sync::mpsc::Receiver<(
             fonte.capture_frame(&VideoFrame { rotation: VideoRotation::VideoRotation0, timestamp_us: 0, frame_metadata: None, buffer: buf });
         }
     });
+}
+
+#[cfg(test)]
+mod testes {
+    use super::*;
+
+    #[test]
+    fn print_borrado_fica_pequeno_e_na_proporcao() {
+        // 1280x720 com metade esquerda branca e metade direita preta
+        let (w, h) = (1280usize, 720usize);
+        let mut rgba = vec![0u8; w * h * 4];
+        for y in 0..h {
+            for x in 0..w / 2 {
+                let i = (y * w + x) * 4;
+                rgba[i..i + 4].copy_from_slice(&[255, 255, 255, 255]);
+            }
+        }
+        let (bw, bh, out) = borrar(w, h, &rgba);
+        assert_eq!((bw, bh), (BORRADO_W, 54));
+        assert_eq!(out.len(), bw * bh * 4);
+        let px = |x: usize, y: usize| out[(y * bw + x) * 4];
+        // longe da divisa as cores ficam; na divisa, o desfoque mistura
+        assert_eq!(px(5, 27), 255);
+        assert_eq!(px(90, 27), 0);
+        let meio = px(bw / 2, 27);
+        assert!(meio > 40 && meio < 215, "na divisa devia misturar, deu {meio}");
+        assert!(out.chunks(4).all(|c| c[3] == 255));
+    }
 }

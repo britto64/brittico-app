@@ -275,8 +275,8 @@ impl CallState {
                 None => i += 1,
             }
         }
-        // a camada de cada tela que chega: tempo real só a selecionada (em foco ou em tela cheia); as outras, na grade
-        // e na fileira (desenhadas ou não), a miniatura de 144p a 1 quadro por segundo
+        // cada tela que chega: tempo real só a selecionada (em foco ou em tela cheia); as outras, na grade e na fileira
+        // (desenhadas ou não), ficam paradas num print borrado, sem vídeo chegando (voz.rs tira o print)
         if let Some(v) = &self.voz {
             let sel: Vec<i64> = [self.foco, self.quadro_cheio]
                 .into_iter()
@@ -290,7 +290,7 @@ impl CallState {
             self.tempo_real.clear();
             for id in telas {
                 let tr = unica || sel.contains(&id);
-                // teste da pausa leve: BRITTICO_TESTE_QUEDA força a miniatura entre os segundos 12 e 15 do app
+                // teste: BRITTICO_TESTE_QUEDA deixa a tela parada (o print borrado) entre os segundos 12 e 15 do app
                 let queda = std::env::var("BRITTICO_TESTE_QUEDA").is_ok() && (12.0..15.0).contains(&t);
                 v.pedir_qualidade((id, true), tr && !queda);
                 if tr {
@@ -383,19 +383,14 @@ impl CallState {
             if self.videos.get(k).is_some_and(|(_, n, _)| *n == q.n) {
                 continue;
             }
-            // a tela em tempo real caiu de repente para a miniatura (144p): começa a pausa leve, que segura a última
-            // imagem boa até a qualidade voltar ou 1 s passar
-            let era_boa = self.videos.get(k).is_some_and(|(_, _, size)| size.y > 150.0);
-            if k.1 && self.tempo_real.contains(&k.0) {
+            // a tela em tempo real: a hora do último quadro novo (a pausa leve começa quando ela para de chegar). Sem a
+            // miniatura de 144p, a queda de qualidade é para 540p, que não precisa de pausa
+            if k.1 && self.tempo_real.contains(&k.0) && !q.borrado {
                 self.ultimo_quadro.insert(k.0, t);
-                if q.h <= 150 && era_boa && self.pausa.is_none() && t - self.ultima_pausa >= PAUSA_INTERVALO {
-                    self.pausa = Some((k.0, t));
-                    self.ultima_pausa = t;
-                }
             }
             if let Some((id, ini)) = self.pausa {
                 if k.1 && id == k.0 {
-                    if q.h > 150 || t - ini >= PAUSA_MAX {
+                    if !q.borrado || t - ini >= PAUSA_MAX {
                         // voltou a imagem boa (ou passou 1 s): segue normal
                         self.pausa = None;
                     } else {
@@ -1245,8 +1240,8 @@ fn draw_tile(ui: &egui::Ui, st: &CallState, r: Rect, tile: Tile, t: f64) {
         p.add(egui::Shape::line(pontos, Stroke::new(3.5_f32, Color32::WHITE)));
         ui.ctx().request_repaint();
     }
-    // a tela de outra pessoa que não está selecionada chega a 144p e 1 quadro/s: um véu escuro de leve e o "Assistir"
-    // (o clique no quadro a seleciona; o botão só mostra isso)
+    // a tela de outra pessoa que não está selecionada fica parada num print borrado: um véu escuro de leve e o
+    // "Assistir" (o clique no quadro a seleciona; o botão só mostra isso)
     let selecionada = st.foco == Some(tile) || st.quadro_cheio == Some(tile);
     let eu_pid = dados::pessoa(dados::eu()).profile_id;
     let telas_remotas = st.videos.keys().filter(|(pid, tela)| *tela && *pid != eu_pid).count();
