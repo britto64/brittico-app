@@ -32,6 +32,8 @@ pub struct ConfigState {
     animacoes: bool,
     /// A tela da Call em Full HD (o padrão é HD): o mesmo arquivo `<pasta>/tela` que a Call lê ao começar.
     tela_fullhd: bool,
+    /// Codificar a tela na placa de vídeo (Windows): o arquivo `<pasta>/tela-placa`.
+    tela_placa: bool,
     toast: ui::Toast,
 }
 
@@ -52,6 +54,7 @@ impl Default for ConfigState {
             retomar: true,
             animacoes: true,
             tela_fullhd: crate::call::tela_fullhd(),
+            tela_placa: crate::call::tela_placa(),
             toast: ui::Toast::default(),
         }
     }
@@ -370,16 +373,26 @@ fn atalhos(ui: &mut egui::Ui, x: f32, top: f32, w: f32) {
 
 fn app(ui: &mut egui::Ui, st: &mut ConfigState, x: f32, top: f32, w: f32) {
     let p = ui.painter().clone();
-    let cx = ajustes::card(&p, x, top, w, 120.0 + 2.0 * 58.0 + 20.0, "O app", "Como o Brittico se comporta neste computador.");
+    let chaves = if cfg!(windows) { 3.0 } else { 2.0 };
+    let cx = ajustes::card(&p, x, top, w, 120.0 + chaves * 58.0 + 20.0, "O app", "Como o Brittico se comporta neste computador.");
     let cw = w - 50.0;
     let y = top + 119.3;
     let y = y + chave(ui, cx, y, cw, "animacoes", "Animações", "As capas dos Jogos flutuando e os enfeites que se mexem. Desligar economiza processador em PC fraco.", &mut st.animacoes) + 12.0;
     p.rect_filled(Rect::from_min_size(Pos2::new(cx, y - 6.0), Vec2::new(cw, 1.0)), 0.0, HAIRLINE_2());
     let y = y + 6.0;
     let antes = st.tela_fullhd;
-    chave(ui, cx, y, cw, "tela-fullhd", "Tela em Full HD", "Mostrar a tela na Call em 1080p em vez de 720p. Pesa mais na conexão de quem assiste.", &mut st.tela_fullhd);
+    let y = y + chave(ui, cx, y, cw, "tela-fullhd", "Tela em Full HD", "Mostrar a tela na Call em 1080p em vez de 720p. Pesa mais na conexão de quem assiste.", &mut st.tela_fullhd) + 12.0;
     if st.tela_fullhd != antes {
         let _ = std::fs::write(crate::net::dir().join("tela"), if st.tela_fullhd { "1080" } else { "720" });
+    }
+    if cfg!(windows) {
+        p.rect_filled(Rect::from_min_size(Pos2::new(cx, y - 6.0), Vec2::new(cw, 1.0)), 0.0, HAIRLINE_2());
+        let y = y + 6.0;
+        let antes = st.tela_placa;
+        chave(ui, cx, y, cw, "tela-placa", "Tela pela placa de vídeo", "Codificar a tela na placa de vídeo em vez do processador. Vale a partir da próxima vez que mostrar a tela.", &mut st.tela_placa);
+        if st.tela_placa != antes {
+            let _ = std::fs::write(crate::net::dir().join("tela-placa"), if st.tela_placa { "1" } else { "0" });
+        }
     }
 }
 

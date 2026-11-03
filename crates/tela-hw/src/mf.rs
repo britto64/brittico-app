@@ -1,8 +1,9 @@
 //! Codificador H.264 síncrono por fora, em cima do MFT assíncrono de hardware.
 //!
 //! O MFT de hardware pede entrada (`METransformNeedInput`) e avisa saída (`METransformHaveOutput`).
-//! O teto de bitrate é o da Call (não se baixa o teto para "aliviar a rede": quem pede menos é o
-//! controle de banda do LiveKit, e mesmo assim o alvo não passa do teto).
+//! Taxa variável com teto (`PeakConstrainedVBR`): a média é o que uma imagem boa precisa (6 Mbps em 720p) e o
+//! teto é o da Call (12 Mbps), usado só quando a cena mexe muito. Quando a rede pede menos (o controle de banda do
+//! LiveKit), o teto desce para o pedido e a média nunca passa dele.
 
 use std::mem::ManuallyDrop;
 use std::ptr;
@@ -13,7 +14,7 @@ use windows::core::{Interface, GUID};
 use windows::Win32::Foundation::VARIANT_TRUE;
 use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1};
 use windows::Win32::Media::MediaFoundation::{
-    eAVEncCommonRateControlMode_CBR, CODECAPI_AVEncCommonMaxBitRate, CODECAPI_AVEncCommonMeanBitRate,
+    eAVEncCommonRateControlMode_PeakConstrainedVBR, CODECAPI_AVEncCommonMaxBitRate, CODECAPI_AVEncCommonMeanBitRate,
     CODECAPI_AVEncCommonRateControlMode, CODECAPI_AVEncMPVDefaultBPictureCount, CODECAPI_AVEncMPVGOPSize,
     CODECAPI_AVEncVideoForceKeyFrame, CODECAPI_AVLowLatencyMode, ICodecAPI, IMFActivate, IMFMediaEventGenerator,
     IMFSample, IMFTransform, MEError, METransformHaveOutput, METransformNeedInput, MFCreateMediaType,
@@ -32,7 +33,7 @@ use windows::Win32::Media::MediaFoundation::{
 use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, COINIT_MULTITHREADED};
 use windows::Win32::System::Variant::{VARIANT, VARIANT_0_0, VARIANT_0_0_0, VT_BOOL, VT_UI4};
 
-use crate::bitstream::{acesso_annex_b, bitrate_alvo, Acesso};
+use crate::bitstream::{acesso_annex_b, bitrate_alvo, taxas, Acesso};
 
 const ESPERA_ENTRADA: Duration = Duration::from_millis(800);
 const FOLGA_SAIDA: Duration = Duration::from_millis(15);
@@ -47,6 +48,8 @@ pub struct Codificador {
     largura: u32,
     altura: u32,
     fps: u32,
+    /// A média para uma imagem boa, o teto de agora (o pedido da rede, sem passar do teto da Call) e o da Call.
+    media: u64,
     bitrate: u64,
     teto: u64,
     transform: IMFTransform,
@@ -68,8 +71,9 @@ unsafe impl Send for Codificador {}
 
 impl Codificador {
     /// Abre o primeiro MFT H.264 de hardware que aceitar NV12 neste tamanho.
-    /// `bitrate` e `teto` em bits por segundo; o alvo aplicado é `min(bitrate, teto)`.
-    pub fn abrir(largura: u32, altura: u32, fps: u32, bitrate: u64, teto: u64) -> Result<Self, String> {
+    /// Em bits por segundo: `media` é a média da taxa variável, `bitrate` o teto pedido pela rede (sem passar de
+    /// `teto`, o da Call).
+    pub fn abrir(largura: u32, altura: u32, fps: u32, media: u64, bitrate: u64, teto: u64) -> Result<Self, String> {
         if largura < 2 || altura < 2 || largura % 2 != 0 || altura % 2 != 0 {
             return Err(format!("tamanho inválido para NV12 ({largura}x{altura})"));
         }
@@ -83,7 +87,7 @@ impl Codificador {
         let mut ultimo = String::from("nenhum codificador H.264 de hardware aceitou o formato");
         for ativar in enumerar()? {
             let nome = nome_amigavel(&ativar).unwrap_or_else(|| "MFT H.264".into());
-            match montar(&ativar, nome, largura, altura, fps, bitrate, teto.max(bitrate)) {
+            match montar(&ativar, nome, largura, altura, fps, media, bitrate, teto.max(bitrate)) {
                 Ok(c) => return Ok(c),
                 Err(e) => ultimo = e,
             }
@@ -108,13 +112,14 @@ impl Codificador {
         if largura == self.largura && altura == self.altura {
             return Ok(());
         }
-        let mut novo = Self::abrir(largura, altura, self.fps, self.bitrate, self.teto)?;
+        let mut novo = Self::abrir(largura, altura, self.fps, self.media, self.bitrate, self.teto)?;
         novo.pedir_chave();
         *self = novo;
         Ok(())
     }
 
-    /// Alvo do controle de banda, em bits por segundo, sem passar do teto.
+    /// O pedido do controle de banda, em bits por segundo: vira o teto de agora (sem passar do da Call), e a média
+    /// desce junto se ficar acima dele.
     pub fn definir_bitrate(&mut self, pedido: u64) {
         let alvo = bitrate_alvo(pedido, self.teto);
         if alvo == self.bitrate {
@@ -122,9 +127,15 @@ impl Codificador {
         }
         self.bitrate = alvo;
         if let Some(api) = &self.codec_api {
-            definir_u32(api, &CODECAPI_AVEncCommonMeanBitRate, alvo as u32);
-            definir_u32(api, &CODECAPI_AVEncCommonMaxBitRate, alvo as u32);
+            let (media, maximo) = taxas(self.media, alvo, self.teto);
+            definir_u32(api, &CODECAPI_AVEncCommonMeanBitRate, media as u32);
+            definir_u32(api, &CODECAPI_AVEncCommonMaxBitRate, maximo as u32);
         }
+    }
+
+    /// O teto de agora (o pedido da rede, sem passar do da Call), para reabrir com ele.
+    pub fn bitrate(&self) -> u64 {
+        self.bitrate
     }
 
     pub fn pedir_chave(&mut self) {
@@ -444,7 +455,9 @@ fn nome_amigavel(ativar: &IMFActivate) -> Option<String> {
     }
 }
 
-fn montar(ativar: &IMFActivate, nome: String, largura: u32, altura: u32, fps: u32, bitrate: u64, teto: u64) -> Result<Codificador, String> {
+#[allow(clippy::too_many_arguments)]
+fn montar(ativar: &IMFActivate, nome: String, largura: u32, altura: u32, fps: u32, media: u64, bitrate: u64, teto: u64) -> Result<Codificador, String> {
+    let (media_ef, maximo) = taxas(media, bitrate, teto);
     unsafe {
         let transform: IMFTransform = ativar.ActivateObject().map_err(|e| format!("{nome}: não ativou ({e})"))?;
         let mut assincrono = false;
@@ -463,16 +476,16 @@ fn montar(ativar: &IMFActivate, nome: String, largura: u32, altura: u32, fps: u3
         };
         let codec_api: Option<ICodecAPI> = transform.cast().ok();
         if let Some(api) = &codec_api {
-            definir_u32(api, &CODECAPI_AVEncCommonRateControlMode, eAVEncCommonRateControlMode_CBR.0 as u32);
-            definir_u32(api, &CODECAPI_AVEncCommonMeanBitRate, bitrate as u32);
-            definir_u32(api, &CODECAPI_AVEncCommonMaxBitRate, bitrate as u32);
+            definir_u32(api, &CODECAPI_AVEncCommonRateControlMode, eAVEncCommonRateControlMode_PeakConstrainedVBR.0 as u32);
+            definir_u32(api, &CODECAPI_AVEncCommonMeanBitRate, media_ef as u32);
+            definir_u32(api, &CODECAPI_AVEncCommonMaxBitRate, maximo as u32);
             definir_bool(api, &CODECAPI_AVLowLatencyMode, true);
             definir_u32(api, &CODECAPI_AVEncMPVGOPSize, fps.saturating_mul(2).max(1));
             definir_u32(api, &CODECAPI_AVEncMPVDefaultBPictureCount, 0);
         }
         let mut erro = None;
         for perfil in PERFIS {
-            match tipos(&transform, id_entrada, id_saida, largura, altura, fps, bitrate as u32, perfil) {
+            match tipos(&transform, id_entrada, id_saida, largura, altura, fps, media_ef as u32, perfil) {
                 Ok(()) => {
                     erro = None;
                     break;
@@ -500,6 +513,7 @@ fn montar(ativar: &IMFActivate, nome: String, largura: u32, altura: u32, fps: u3
             largura,
             altura,
             fps,
+            media,
             bitrate,
             teto,
             transform,

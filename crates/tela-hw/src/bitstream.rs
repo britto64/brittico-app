@@ -178,6 +178,18 @@ pub fn bitrate_alvo(pedido: u64, teto: u64) -> u64 {
     pedido.clamp(150_000, teto)
 }
 
+/// A média e o teto da taxa variável: o teto é o pedido da rede (sem passar do da Call) e a média nunca passa do teto.
+pub fn taxas(media: u64, pedido: u64, teto: u64) -> (u64, u64) {
+    let maximo = bitrate_alvo(pedido, teto);
+    (media.clamp(150_000, maximo), maximo)
+}
+
+/// A média que uma imagem boa precisa em H.264 de placa de vídeo, pela altura da tela (720p: 6 Mbps; 1080p: 9 Mbps).
+pub fn media_para(altura: u32, teto: u64) -> u64 {
+    let m = if altura > 720 { 9_000_000 } else { 6_000_000 };
+    m.min(teto)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,6 +240,17 @@ mod tests {
         let acesso = acesso_annex_b(&amostra, &cabecalho_avcc(), true).unwrap();
         assert!(acesso.chave);
         assert!(acesso.bytes.windows(5).any(|w| w == [0, 0, 0, 1, 0x67]));
+    }
+
+    #[test]
+    fn taxa_variavel_media_abaixo_do_teto() {
+        assert_eq!(taxas(6_000_000, 12_000_000, 12_000_000), (6_000_000, 12_000_000));
+        // a rede pede 4 Mbps: o teto desce para 4 e a média também
+        assert_eq!(taxas(6_000_000, 4_000_000, 12_000_000), (4_000_000, 4_000_000));
+        // pedir mais que o teto da Call não passa dele
+        assert_eq!(taxas(6_000_000, 30_000_000, 12_000_000), (6_000_000, 12_000_000));
+        assert_eq!(media_para(720, 12_000_000), 6_000_000);
+        assert_eq!(media_para(1080, 12_000_000), 9_000_000);
     }
 
     #[test]

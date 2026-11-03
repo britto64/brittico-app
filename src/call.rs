@@ -1536,3 +1536,10 @@ const PAUSA_INTERVALO: f64 = 300.0;
 pub fn tela_fullhd() -> bool {
     std::fs::read_to_string(net::dir().join("tela")).is_ok_and(|s| s.trim() == "1080")
 }
+
+/// Codificar a tela na placa de vídeo (só Windows; desligado por padrão): a chave das Configurações → O app,
+/// guardada em `<pasta>/tela-placa`. Lida na hora de começar a mostrar a tela.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn tela_placa() -> bool {
+    std::fs::read_to_string(net::dir().join("tela-placa")).is_ok_and(|s| s.trim() == "1")
+}

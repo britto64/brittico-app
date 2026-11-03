@@ -9,7 +9,7 @@ mod bitstream;
 #[cfg(windows)]
 mod mf;
 
-pub use bitstream::Acesso;
+pub use bitstream::{bitrate_alvo, media_para, Acesso};
 
 #[cfg(windows)]
 pub use mf::{fornecedor_gpu, tem_hardware, Codificador};

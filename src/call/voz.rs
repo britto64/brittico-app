@@ -610,25 +610,100 @@ struct EstadoHw {
     encaminhar: bool,
     sem_saida: u32,
     anunciado: bool,
+    /// Depois de publicada, uma falha da placa não troca de codificador: fecha, espera e reabre. Seguidas demais,
+    /// desiste e avisa (a tela fica parada até a pessoa mostrar de novo).
+    falhas: u32,
+    reabrir_em: Option<std::time::Instant>,
+    desistiu: bool,
+    estado: Arc<Mutex<Estado>>,
 }
+
+/// Quantas reaberturas seguidas da placa, com a tela já na call, antes de desistir.
+#[cfg(windows)]
+const FALHAS_MAX: u32 = 5;
 
 #[cfg(windows)]
 impl EstadoHw {
-    fn novo(fonte: NativeVideoSource, fps: u32, bitrate: u64, publicado: Arc<std::sync::atomic::AtomicBool>, fps_mili: Arc<std::sync::atomic::AtomicU32>, log: bool) -> Self {
-        Self { fonte, cod: None, publicado, fps_mili, fps: fps.max(1), bitrate, teto: bitrate, log, viu_chave: false, encaminhar: false, sem_saida: 0, anunciado: false }
+    #[allow(clippy::too_many_arguments)]
+    fn novo(fonte: NativeVideoSource, fps: u32, bitrate: u64, publicado: Arc<std::sync::atomic::AtomicBool>, fps_mili: Arc<std::sync::atomic::AtomicU32>, log: bool, estado: Arc<Mutex<Estado>>) -> Self {
+        Self {
+            fonte,
+            cod: None,
+            publicado,
+            fps_mili,
+            fps: fps.max(1),
+            bitrate,
+            teto: bitrate,
+            log,
+            viu_chave: false,
+            encaminhar: false,
+            sem_saida: 0,
+            anunciado: false,
+            falhas: 0,
+            reabrir_em: None,
+            desistiu: false,
+            estado,
+        }
+    }
+
+    /// Como `tratar`, mas com a tela já na call uma falha não volta como erro: o codificador fecha e reabre depois
+    /// de uma espera (1 s, 2 s, ... até 5 s), sem segurar a captura. Antes de publicar o erro sobe, e a Call
+    /// tenta o VP8 de software.
+    fn quadro(&mut self, buf: &I420Buffer) -> Result<bool, String> {
+        if !self.publicado.load(Ordering::Acquire) {
+            return self.tratar(buf);
+        }
+        if self.desistiu || self.reabrir_em.is_some_and(|t| std::time::Instant::now() < t) {
+            return Ok(true);
+        }
+        self.reabrir_em = None;
+        match self.tratar(buf) {
+            Ok(v) => {
+                if self.encaminhar {
+                    self.falhas = 0;
+                }
+                Ok(v)
+            }
+            Err(e) => {
+                self.cod = None;
+                self.encaminhar = false;
+                self.sem_saida = 0;
+                self.falhas += 1;
+                eprintln!("[voz] tela: a placa de vídeo falhou ({e}); tentativa {} de {FALHAS_MAX}", self.falhas);
+                if self.falhas >= FALHAS_MAX {
+                    self.desistiu = true;
+                    if let Ok(mut est) = self.estado.lock() {
+                        est.aviso = Some("A placa de vídeo parou de codificar a tela. Pare e mostre de novo.".into());
+                    }
+                } else {
+                    self.reabrir_em = Some(std::time::Instant::now() + std::time::Duration::from_secs(self.falhas as u64));
+                }
+                Ok(true)
+            }
+        }
     }
 
     /// `Ok(true)` quando já saiu um quadro chave (a captura pode ser publicada).
     fn tratar(&mut self, buf: &I420Buffer) -> Result<bool, String> {
+        use livekit::webrtc::video_frame::VideoBuffer;
         let (w, h) = (buf.width(), buf.height());
         if w < 2 || h < 2 {
             return Ok(self.viu_chave);
         }
         if self.cod.as_ref().map_or(true, |c| c.largura() != w || c.altura() != h) {
-            let cod = tela_hw::Codificador::abrir(w, h, self.fps, self.bitrate, self.teto)?;
+            // o teto que a rede pediu por último continua valendo no codificador novo
+            let alvo = self.cod.as_ref().map_or(self.bitrate, |c| c.bitrate());
+            self.cod = None;
+            let media = tela_hw::media_para(h, self.teto);
+            let cod = tela_hw::Codificador::abrir(w, h, self.fps, media, alvo, self.teto)?;
             if self.log && !self.anunciado {
                 let gpu = tela_hw::fornecedor_gpu().unwrap_or("GPU");
-                eprintln!("[voz] tela: H.264 por hardware ({}, {gpu}), {w}x{h}, teto {} Mbps, sem simulcast", cod.nome(), self.teto / 1_000_000);
+                eprintln!(
+                    "[voz] tela: H.264 por hardware ({}, {gpu}), {w}x{h}, taxa variável: média {} Mbps, teto {} Mbps, sem simulcast",
+                    cod.nome(),
+                    media / 1_000_000,
+                    self.teto / 1_000_000
+                );
                 self.anunciado = true;
             }
             self.cod = Some(cod);
@@ -644,6 +719,7 @@ impl EstadoHw {
             if let Some(rc) = self.fonte.take_rate_control_request() {
                 if rc.target_bitrate_bps > 0 {
                     novo_bitrate = Some(rc.target_bitrate_bps);
+                    self.bitrate = tela_hw::bitrate_alvo(rc.target_bitrate_bps, self.teto);
                 }
                 // não sobe dos fps do modo; o teto de bitrate fica no codificador
                 if rc.framerate_fps.is_finite() && rc.framerate_fps >= 5.0 {
@@ -697,6 +773,7 @@ impl EstadoHw {
 
 #[cfg(windows)]
 fn i420_nv12(buf: &I420Buffer) -> Vec<u8> {
+    use livekit::webrtc::video_frame::VideoBuffer;
     let (w, h) = (buf.width(), buf.height());
     let (sy, su, sv) = buf.strides();
     let (y, u, v) = buf.data();
@@ -741,17 +818,21 @@ async fn mostrar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, fullhd:
     publicar_tela(room, modo, escolha, fullhd, estado, ctx, false).await
 }
 
-/// `BRITTICO_TELA_HW=0` (ou `nao`/`off`/`software`) fica no VP8. `BRITTICO_TELA_CODEC=vp8|vp9|av1` também: o hardware
-/// só fala H.264. O padrão sintético (`BRITTICO_TELA_TESTE`) continua medindo o codificador de software.
+/// A placa de vídeo só codifica a tela com a chave das Configurações → O app ligada (desligada por padrão, até ser
+/// testada em Windows de verdade) ou com `BRITTICO_TELA_HW=1`. `BRITTICO_TELA_HW=0` (ou `nao`/`off`/`software`)
+/// força o VP8 mesmo com a chave. `BRITTICO_TELA_CODEC=vp8|vp9|av1` também: o hardware só fala H.264. O padrão
+/// sintético (`BRITTICO_TELA_TESTE`) continua medindo o codificador de software.
 #[cfg(windows)]
 fn deixar_hardware() -> bool {
     if std::env::var("BRITTICO_TELA_TESTE").is_ok() {
         return false;
     }
-    if std::env::var("BRITTICO_TELA_HW").is_ok_and(|v| matches!(v.to_ascii_lowercase().as_str(), "0" | "nao" | "não" | "off" | "software")) {
-        return false;
-    }
-    !matches!(std::env::var("BRITTICO_TELA_CODEC").as_deref(), Ok("vp8" | "vp9" | "av1"))
+    let pedido = match std::env::var("BRITTICO_TELA_HW").map(|v| v.to_ascii_lowercase()) {
+        Ok(v) if matches!(v.as_str(), "0" | "nao" | "não" | "off" | "software") => return false,
+        Ok(v) if matches!(v.as_str(), "1" | "sim" | "on" | "placa") => true,
+        _ => super::tela_placa(),
+    };
+    pedido && !matches!(std::env::var("BRITTICO_TELA_CODEC").as_deref(), Ok("vp8" | "vp9" | "av1"))
 }
 
 async fn publicar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, fullhd: bool, estado: &Arc<Mutex<Estado>>, ctx: &eframe::egui::Context, hardware: bool) -> Result<(LocalVideoTrack, std::sync::mpsc::SyncSender<()>), String> {
@@ -802,6 +883,8 @@ async fn publicar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, fullhd
     } else {
     #[cfg(windows)]
     let publicado_thr = publicado.clone();
+    #[cfg(windows)]
+    let estado_hw = estado.clone();
     let viu_cru = Arc::new(std::sync::atomic::AtomicBool::new(false));
     Some(std::thread::Builder::new()
         .name("call-tela".into())
@@ -823,7 +906,7 @@ async fn publicar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, fullhd
             };
             let mut montagem = Montagem::nova(alt, eu, log, est_previa, ctx_previa, escolha.filter(|e| e.janela).map(|e| e.id));
             #[cfg(windows)]
-            let mut hw = hardware.then(|| EstadoHw::novo(fonte.clone(), modo.fps() as u32, modo.bitrate(), publicado_thr, fps_mili.clone(), log));
+            let mut hw = hardware.then(|| EstadoHw::novo(fonte.clone(), modo.fps() as u32, modo.bitrate(), publicado_thr, fps_mili.clone(), log, estado_hw));
             #[cfg(windows)]
             let erro_cb = erro_hw.clone();
             let viu = viu_cru.clone();
@@ -843,7 +926,7 @@ async fn publicar_tela(room: &Room, modo: Modo, escolha: Option<Escolha>, fullhd
                 viu.store(true, Ordering::Relaxed);
                 #[cfg(windows)]
                 if let Some(hw) = hw.as_mut() {
-                    match hw.tratar(&buf) {
+                    match hw.quadro(&buf) {
                         Ok(true) => {
                             if sit.compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed).is_ok() && log {
                                 eprintln!("[voz] tela: primeiro quadro H.264 {w}x{h}");
