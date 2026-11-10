@@ -186,6 +186,10 @@ pub struct Som {
     fio: Option<std::thread::JoinHandle<()>>,
     pub entrada: String,
     pub saida: String,
+    /// O microfone não abriu, mas a saída sim: dá para ouvir, e a pessoa precisa saber por que não fala.
+    pub aviso: Option<String>,
+    /// Um dos aparelhos deu erro depois de aberto (fone desligado, Bluetooth trocando de perfil): quem cuida do som reabre.
+    quebrado: Arc<AtomicBool>,
 }
 
 impl Drop for Som {
@@ -198,6 +202,11 @@ impl Drop for Som {
 }
 
 impl Som {
+    /// Um aparelho caiu depois de aberto.
+    pub fn quebrado(&self) -> bool {
+        self.quebrado.load(Ordering::Relaxed)
+    }
+
     /// Abre o microfone e (com `mistura`) a saída. Devolve os nomes de verdade dos aparelhos abertos, ou o motivo da falha.
     pub fn abrir(microfone: &str, saida: &str, mistura: Option<MisturaRef>, ctl: Arc<Controles>) -> Result<Som, String> {
         // para testar e capturar sem tocar no som de ninguém: `OLHEIRO_SOM=nao` (nenhum aparelho) ou `tom` (o "microfone" é um tom)
@@ -206,7 +215,9 @@ impl Som {
             Ok("tom") => return Ok(Som::falso(true, mistura, ctl)),
             _ => {}
         }
-        let (pronto_tx, pronto_rx) = sync_channel::<Result<(String, String), String>>(1);
+        let (pronto_tx, pronto_rx) = sync_channel::<Result<(String, String, Option<String>), String>>(1);
+        let quebrado = Arc::new(AtomicBool::new(false));
+        let quebrado_fio = quebrado.clone();
         let (parar_tx, parar_rx) = sync_channel::<()>(1);
         let (mic, sai) = (microfone.to_string(), saida.to_string());
         let fio = std::thread::Builder::new()
@@ -215,7 +226,7 @@ impl Som {
                 // o eco que sai pelo fone volta para a limpeza do microfone por aqui
                 let (eco_tx, eco_rx) = sync_channel::<Vec<i16>>(64);
                 let saida = match &mistura {
-                    Some(m) => match abrir_saida(&sai, m.clone(), eco_tx) {
+                    Some(m) => match abrir_saida(&sai, m.clone(), eco_tx, quebrado_fio.clone()) {
                         Ok(s) => Some(s),
                         Err(e) => {
                             let _ = pronto_tx.send(Err(e));
@@ -224,14 +235,16 @@ impl Som {
                     },
                     None => None,
                 };
-                let entrada = match abrir_microfone(&mic, ctl, eco_rx) {
-                    Ok(s) => s,
+                // sem microfone ainda se ouve: a saída não pode ir junto com ele para o buraco
+                let (entrada, aviso) = match abrir_microfone(&mic, ctl, eco_rx, quebrado_fio) {
+                    Ok(s) => (Some(s), None),
+                    Err(e) if saida.is_some() => (None, Some(e)),
                     Err(e) => {
                         let _ = pronto_tx.send(Err(e));
                         return;
                     }
                 };
-                let nomes = (entrada.1.clone(), saida.as_ref().map(|s| s.1.clone()).unwrap_or_default());
+                let nomes = (entrada.as_ref().map(|e| e.1.clone()).unwrap_or_default(), saida.as_ref().map(|s| s.1.clone()).unwrap_or_default(), aviso);
                 let _ = pronto_tx.send(Ok(nomes));
                 // fica aqui até alguém soltar o `Som`
                 let _ = parar_rx.recv();
@@ -240,7 +253,7 @@ impl Som {
             })
             .map_err(|e| e.to_string())?;
         match pronto_rx.recv_timeout(Duration::from_secs(10)) {
-            Ok(Ok((entrada, saida))) => Ok(Som { parar: Some(parar_tx), fio: Some(fio), entrada, saida }),
+            Ok(Ok((entrada, saida, aviso))) => Ok(Som { parar: Some(parar_tx), fio: Some(fio), entrada, saida, aviso, quebrado }),
             Ok(Err(e)) => {
                 let _ = fio.join();
                 Err(e)
@@ -281,19 +294,22 @@ impl Som {
                 }
             }
         });
-        Som { parar: Some(parar_tx), fio: Some(fio), entrada: if tom { "tom de teste".into() } else { String::new() }, saida: String::new() }
+        Som { parar: Some(parar_tx), fio: Some(fio), entrada: if tom { "tom de teste".into() } else { String::new() }, saida: String::new(), aviso: None, quebrado: Arc::new(AtomicBool::new(false)) }
     }
 }
 
 /// O microfone: o fio do cpal só converte e passa adiante; a limpeza roda numa thread nossa.
-fn abrir_microfone(nome: &str, ctl: Arc<Controles>, eco_rx: Receiver<Vec<i16>>) -> Result<(cpal::Stream, String), String> {
+fn abrir_microfone(nome: &str, ctl: Arc<Controles>, eco_rx: Receiver<Vec<i16>>, quebrado: Arc<AtomicBool>) -> Result<(cpal::Stream, String), String> {
     let dev = achar(true, nome).ok_or("Não achei nenhum microfone.")?;
     let nome_real = dev.name().unwrap_or_default();
     let cfg = dev.default_input_config().map_err(|e| format!("O microfone não abriu: {e}"))?;
     let canais = cfg.channels() as usize;
     let taxa = cfg.sample_rate().0;
     let (tx, rx) = sync_channel::<Vec<f32>>(64);
-    let erro = |e| eprintln!("[som] microfone: {e}");
+    let erro = move |e| {
+        crate::logfile::write(&format!("O microfone deu erro: {e}"));
+        quebrado.store(true, Ordering::Relaxed);
+    };
     let conf: cpal::StreamConfig = cfg.clone().into();
     let stream = match cfg.sample_format() {
         cpal::SampleFormat::F32 => dev.build_input_stream(&conf, move |d: &[f32], _| { let _ = tx.try_send(mono(d, canais, |s| s)); }, erro, None),
@@ -303,6 +319,7 @@ fn abrir_microfone(nome: &str, ctl: Arc<Controles>, eco_rx: Receiver<Vec<i16>>) 
     }
     .map_err(|e| format!("O microfone não abriu: {e}"))?;
     stream.play().map_err(|e| format!("O microfone não começou: {e}"))?;
+    crate::logfile::write(&format!("Microfone aberto: {nome_real} ({taxa} Hz, {canais} canais)"));
     std::thread::Builder::new().name("olheiro-mic".into()).spawn(move || limpar_microfone(rx, eco_rx, taxa, ctl)).map_err(|e| e.to_string())?;
     Ok((stream, nome_real))
 }
@@ -381,7 +398,7 @@ fn limpar_microfone(rx: Receiver<Vec<f32>>, eco_rx: Receiver<Vec<i16>>, taxa: u3
     }
 }
 
-fn abrir_saida(nome: &str, mistura: MisturaRef, eco_tx: SyncSender<Vec<i16>>) -> Result<(cpal::Stream, String), String> {
+fn abrir_saida(nome: &str, mistura: MisturaRef, eco_tx: SyncSender<Vec<i16>>, quebrado: Arc<AtomicBool>) -> Result<(cpal::Stream, String), String> {
     let dev = achar(false, nome).ok_or("Não achei nenhuma saída de som (fone ou caixa).")?;
     let nome_real = dev.name().unwrap_or_default();
     let cfg = dev.default_output_config().map_err(|e| format!("A saída de som não abriu: {e}"))?;
@@ -389,7 +406,10 @@ fn abrir_saida(nome: &str, mistura: MisturaRef, eco_tx: SyncSender<Vec<i16>>) ->
     let taxa = cfg.sample_rate().0;
     let conf: cpal::StreamConfig = cfg.clone().into();
     let mut gerador = Gerador::new(mistura, taxa, eco_tx);
-    let erro = |e| eprintln!("[som] saída: {e}");
+    let erro = move |e| {
+        crate::logfile::write(&format!("A saída de som deu erro: {e}"));
+        quebrado.store(true, Ordering::Relaxed);
+    };
     let stream = match cfg.sample_format() {
         cpal::SampleFormat::F32 => dev.build_output_stream(&conf, move |d: &mut [f32], _| gerador.encher(d, canais, |v| v), erro, None),
         cpal::SampleFormat::I16 => dev.build_output_stream(&conf, move |d: &mut [i16], _| gerador.encher(d, canais, |v| (v * 32767.0) as i16), erro, None),
@@ -398,6 +418,7 @@ fn abrir_saida(nome: &str, mistura: MisturaRef, eco_tx: SyncSender<Vec<i16>>) ->
     }
     .map_err(|e| format!("A saída de som não abriu: {e}"))?;
     stream.play().map_err(|e| format!("A saída de som não começou: {e}"))?;
+    crate::logfile::write(&format!("Saída de som aberta: {nome_real} ({taxa} Hz, {canais} canais)"));
     Ok((stream, nome_real))
 }
 

@@ -634,12 +634,22 @@ impl Laco {
             self.est.som_erro = None;
             self.som_tentar_em = Instant::now();
         }
+        if self.som.as_ref().is_some_and(|s| s.quebrado()) {
+            // o fone foi desligado ou trocou de perfil: fecha e abre de novo, que é o que a pessoa faria à mão
+            self.registrar("Um aparelho de som caiu; abrindo de novo.");
+            self.som = None;
+            self.est.som_aberto = None;
+            self.som_tentar_em = Instant::now() + Duration::from_secs(2);
+        }
         if let Some((mic, sai, com_saida)) = quer {
             if self.som.is_none() && Instant::now() >= self.som_tentar_em {
                 match Som::abrir(&mic, &sai, com_saida.then(|| self.comum.mistura.clone()), self.comum.ctl.clone()) {
                     Ok(s) => {
                         self.est.som_aberto = Some((s.entrada.clone(), s.saida.clone()));
-                        self.est.som_erro = None;
+                        self.est.som_erro = s.aviso.as_ref().map(|e| format!("{}. Você está ouvindo, mas não fala até escolher outro microfone nos Ajustes.", e.trim_end_matches('.')));
+                        if let Some(e) = s.aviso.clone() {
+                            self.registrar(e);
+                        }
                         self.som = Some(s);
                     }
                     Err(e) => {
