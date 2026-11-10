@@ -10,7 +10,7 @@ publish = false
 [package]
 name = "brittico-app"
 description = "O Brittico como programa: o site (brittico.xyz) tela por tela: Início, Jogos, LivePixel, Call com voz e tela, perfil e configurações."
-version = "1.0.13"
+version = "1.0.14"
 edition = "2021"
 publish = false
 
@@ -46,7 +46,7 @@ tela-hw = { path = "crates/tela-hw" }
 
 # o cursor do mouse na tela mostrada (a captura do LiveKit no Windows não o desenha): GetCursorInfo/GetIconInfo/GetDIBits
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader"] }
 
 # o ícone e a versão dentro do brittico.exe (só quando o build roda num Windows, como no GitHub Actions)
 [target.'cfg(windows)'.build-dependencies]

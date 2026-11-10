@@ -5,6 +5,8 @@
 //! Call nem com a conta: quem trabalha é o `olheiro-motor`.
 
 pub mod overlay;
+#[cfg(windows)]
+mod overlay_win;
 
 use crate::perfil::ajustes::{self as aj, Btn};
 use crate::theme::*;
@@ -52,7 +54,8 @@ pub struct Janela {
     pub principal_oculta: bool,
     /// Desde quando (relógio do egui) a partida está sendo lida: o aviso de detecção espera o jogo desenhar os ícones.
     det_desde: Option<f64>,
-    /// Onde o overlay foi posto por último (para acompanhar a janela do jogo se ela mudar de lugar).
+    /// Onde o overlay do egui foi posto por último (só fora do Windows, onde o overlay é uma janela do egui).
+    #[cfg_attr(windows, allow(dead_code))]
     overlay_pos: Option<Pos2>,
 }
 
@@ -83,7 +86,9 @@ impl Janela {
         }
         // BRITTICO_OLHEIRO_ABERTO=chave: já com o volume dessa pessoa aberto (para capturar)
         j.expandido = std::env::var("BRITTICO_OLHEIRO_ABERTO").ok();
-        Arc::new(Mutex::new(j))
+        let j = Arc::new(Mutex::new(j));
+        overlay::iniciar(j.clone());
+        j
     }
 
     /// Abrir já liga (e deixa ligado para as próximas vezes que o Brittico abrir).
