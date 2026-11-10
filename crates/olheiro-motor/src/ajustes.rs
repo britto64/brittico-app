@@ -66,7 +66,7 @@ pub struct Ajustes {
     /// Já passou pela apresentação.
     pub apresentado: bool,
     pub pasta_lol: Option<String>,
-    /// De 0 (rígida: só aceita o que tem certeza) a 1 (sensível: aceita mais, e erra mais). 0,5 é o ajuste de fábrica.
+    /// De 0 (rígida: só aceita o que tem certeza) a 1 (sensível: aceita mais, e erra mais). 0,65 é o ajuste de fábrica.
     pub sensibilidade: f32,
 }
 
@@ -86,7 +86,7 @@ impl Default for Ajustes {
             ligar_ao_abrir: true,
             apresentado: false,
             pasta_lol: None,
-            sensibilidade: 0.5,
+            sensibilidade: 0.65,
         }
     }
 }
@@ -106,7 +106,7 @@ impl Ajustes {
         }
         a.ganho_microfone = a.ganho_microfone.clamp(0.0, 2.0);
         a.volume_geral = a.volume_geral.clamp(0.0, 2.0);
-        a.sensibilidade = if a.sensibilidade.is_finite() { a.sensibilidade.clamp(0.0, 1.0) } else { 0.5 };
+        a.sensibilidade = if a.sensibilidade.is_finite() { a.sensibilidade.clamp(0.0, 1.0) } else { 0.65 };
         a
     }
 
