@@ -56,11 +56,22 @@ pub struct Settings {
     pub debug: bool,
     /// Onde gravá-lo (`None`: na pasta de configuração).
     pub debug_dir: Option<std::path::PathBuf>,
+    /// A sensibilidade da detecção, de 0 (rígida) a 1 (sensível); 0,5 é o ajuste de fábrica.
+    pub sensitivity: f32,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { side: MinimapSide::Right, poll_idle_ms: 2000.0, poll_game_ms: 1000.0, frame_ms: 200.0, retry_ms: 5000.0, debug: false, debug_dir: None }
+        Settings {
+            side: MinimapSide::Right,
+            poll_idle_ms: 2000.0,
+            poll_game_ms: 1000.0,
+            frame_ms: 200.0,
+            retry_ms: 5000.0,
+            debug: false,
+            debug_dir: None,
+            sensitivity: olheiro_core::Tuning::DEFAULT_SENSITIVITY,
+        }
     }
 }
 
@@ -89,6 +100,8 @@ struct Game {
     game_time0: f64,
     t0: f64,
     no_rings_since: Option<f64>,
+    /// Como cada aliado vivo foi achado no último quadro (só os que o olheiro soube dizer).
+    how: Vec<(String, How)>,
     dead: Vec<String>,
     /// O pacote de depuração desta partida (só com `Settings.debug`).
     bundle: Option<crate::debug::Bundle>,
@@ -121,6 +134,23 @@ impl<L: Lol, C: Capture, I: Icons, O: Out> Runner<L, C, I, O> {
 
     pub fn in_game(&self) -> bool {
         matches!(self.mode, Mode::InGame(_))
+    }
+
+    /// Muda a sensibilidade da detecção, na hora (vale até para a partida em andamento).
+    pub fn set_sensitivity(&mut self, s: f32) {
+        self.cfg.sensitivity = s;
+        if let Mode::InGame(g) = &mut self.mode {
+            g.scout.set_sensitivity(s);
+        }
+    }
+
+    /// Como cada aliado vivo foi achado no último quadro (`(chave, como)`), e quantos aliados vivos o olheiro deveria achar.
+    /// Quem não está na lista não foi achado em lugar nenhum.
+    pub fn deteccao(&self) -> (Vec<(String, How)>, usize) {
+        match &self.mode {
+            Mode::InGame(g) => (g.how.clone(), g.keys.len().saturating_sub(g.dead.iter().filter(|d| g.keys.contains(d)).count())),
+            Mode::Idle => (Vec::new(), 0),
+        }
     }
 
     /// Liga ou desliga a gravação do pacote (vale a partir da próxima partida).
@@ -221,6 +251,7 @@ impl<L: Lol, C: Capture, I: Icons, O: Out> Runner<L, C, I, O> {
         }
         let players: Vec<ScoutPlayer> = loaded.into_iter().map(|(id, vecs)| ScoutPlayer { id, templates: TemplateSet::new(id, vecs) }).collect();
         let mut scout = Scout::new();
+        scout.set_sensitivity(self.cfg.sensitivity);
         scout.set_players(players);
 
         let queue = self.lol.queue();
@@ -253,6 +284,7 @@ impl<L: Lol, C: Capture, I: Icons, O: Out> Runner<L, C, I, O> {
             game_time0: info.game_time,
             t0: now_ms,
             no_rings_since: None,
+            how: Vec::new(),
             dead: Vec::new(),
             bundle: None,
             meta_written: false,
@@ -350,6 +382,7 @@ impl<L: Lol, C: Capture, I: Icons, O: Out> Runner<L, C, I, O> {
         };
 
         let places = g.scout.placements(now_ms);
+        g.how = places.iter().filter_map(|p| g.keys.get(p.id).map(|k| (k.clone(), p.how))).collect();
         let pos: Vec<Pos> = places
             .iter()
             .filter_map(|p| {

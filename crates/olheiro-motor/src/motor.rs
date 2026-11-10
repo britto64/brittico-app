@@ -54,6 +54,19 @@ pub struct Leitura {
     pub icone_px: u32,
     /// Quantos aliados apareceram no último quadro.
     pub aneis: usize,
+    /// Como cada aliado vivo foi achado no último quadro, pela chave do Riot ID. Quem não está aqui não foi achado.
+    pub como: BTreeMap<String, Como>,
+    /// Quantos aliados vivos (você incluído) o Olheiro deveria achar agora.
+    pub esperados: usize,
+}
+
+pub use olheiro_core::How as Como;
+
+impl Leitura {
+    /// Quantos aliados foram vistos DE FATO (o ícone foi reconhecido agora há pouco), sem contar os palpites.
+    pub fn vistos(&self) -> usize {
+        self.como.values().filter(|c| **c == Como::Seen).count()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -239,6 +252,18 @@ impl Fonte {
             Fonte::Simulada(r) => r.aliados(),
         }
     }
+    fn deteccao(&self) -> (Vec<(String, Como)>, usize) {
+        match self {
+            Fonte::Lol(r) => r.deteccao(),
+            Fonte::Simulada(r) => r.deteccao(),
+        }
+    }
+    fn set_sensibilidade(&mut self, s: f32) {
+        match self {
+            Fonte::Lol(r) => r.set_sensitivity(s),
+            Fonte::Simulada(r) => r.set_sensitivity(s),
+        }
+    }
     fn set_debug(&mut self, on: bool) {
         match self {
             Fonte::Lol(r) => r.set_debug(on),
@@ -351,6 +376,11 @@ impl Laco {
                 if let Ok(mut m) = self.comum.mistura.lock() {
                     m.volume_geral = a.volume_geral;
                 }
+                if (a.sensibilidade - antes.sensibilidade).abs() > f32::EPSILON {
+                    if let Some(f) = self.fonte.as_mut() {
+                        f.set_sensibilidade(a.sensibilidade);
+                    }
+                }
                 if a.pacote_erro != antes.pacote_erro {
                     if let Some(f) = self.fonte.as_mut() {
                         f.set_debug(a.pacote_erro);
@@ -409,7 +439,7 @@ impl Laco {
             Lado::Direita => MinimapSide::Right,
             Lado::Esquerda => MinimapSide::Left,
         };
-        let cfg = Settings { side: lado, debug: self.est.ajustes.pacote_erro, ..Settings::default() };
+        let cfg = Settings { side: lado, debug: self.est.ajustes.pacote_erro, sensitivity: self.est.ajustes.sensibilidade, ..Settings::default() };
         self.fonte = Some(match self.est.simulando {
             Some(vaga) => {
                 // a partida anda 3x mais rápido que o relógio, para os aliados se espalharem logo
@@ -432,6 +462,9 @@ impl Laco {
         if let Some(f) = self.fonte.as_mut() {
             f.tick(ms);
             self.est.leitura.aneis = f.aneis();
+            let (como, esperados) = f.deteccao();
+            self.est.leitura.como = como.into_iter().collect();
+            self.est.leitura.esperados = esperados;
         }
         let recados: Vec<ToBot> = self.fila.0.borrow_mut().drain(..).collect();
         for r in recados {

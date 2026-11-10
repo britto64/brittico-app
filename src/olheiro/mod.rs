@@ -9,7 +9,7 @@ use crate::theme::*;
 use crate::ui::{self, mix, text};
 use crate::{ic, png};
 use eframe::egui::{self, Align2, Color32, CursorIcon, Order, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, UiBuilder, Vec2, ViewportBuilder, ViewportCommand, ViewportId};
-use olheiro_motor::{Ajustes, Comando, Conexao, Estado, Fase, Jogador, Lado, Motor, Ouvido, Partida, CHEIO_ATE, ZERO_EM};
+use olheiro_motor::{Ajustes, Comando, Como, Conexao, Estado, Fase, Jogador, Lado, Motor, Ouvido, Partida, CHEIO_ATE, ZERO_EM};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -48,6 +48,8 @@ pub struct Janela {
     expandido: Option<String>,
     /// A janela grande do Brittico foi escondida pelo X (fica só esta).
     pub principal_oculta: bool,
+    /// Desde quando (relógio do egui) a partida está sendo lida: o aviso de detecção espera o jogo desenhar os ícones.
+    det_desde: Option<f64>,
 }
 
 pub type JanelaRef = Arc<Mutex<Janela>>;
@@ -62,7 +64,7 @@ impl Janela {
             }
         });
         let rascunho = motor.estado().ajustes;
-        let mut j = Janela { motor, aberta: false, aberta_flag: aberta, ajustes: false, rascunho, visto: None, texturas: HashMap::new(), procurado: HashMap::new(), lista: None, expandido: None, principal_oculta: false };
+        let mut j = Janela { motor, aberta: false, aberta_flag: aberta, ajustes: false, rascunho, visto: None, texturas: HashMap::new(), procurado: HashMap::new(), lista: None, expandido: None, principal_oculta: false, det_desde: None };
         // BRITTICO_OLHEIRO=abrir | ajustes | simulada[N]: abre a janela já num estado, para testar e capturar
         // (N = qual aliado você é na partida simulada, 1 a 5; duas cópias com N diferentes caem na mesma sala de voz)
         if let Ok(v) = std::env::var("BRITTICO_OLHEIRO") {
@@ -161,6 +163,11 @@ pub fn mostrar(ctx: &egui::Context, j: &JanelaRef) {
         j.visto = Some(est.ajustes.clone());
     }
     let t = ctx.input(|i| i.time);
+    if est.fase == Fase::EmPartida {
+        j.det_desde.get_or_insert(t);
+    } else {
+        j.det_desde = None;
+    }
     if ctx.input(|i| i.viewport().close_requested()) {
         j.fechar();
         if j.principal_oculta {
@@ -327,14 +334,143 @@ fn problema(est: &Estado) -> Option<(String, Color32)> {
     None
 }
 
+const AMBAR: Color32 = Color32::from_rgb(0xE0, 0xA1, 0x2B);
+const DET_H: f32 = 158.0;
+/// Quanto tempo a partida precisa estar sendo lida antes de o aviso dizer o que mudar (o jogo demora a desenhar os ícones).
+const DET_ESPERA_S: f64 = 12.0;
+
+fn palavra_sensibilidade(v: f32) -> &'static str {
+    if v < 0.35 {
+        "rígida"
+    } else if v > 0.65 {
+        "sensível"
+    } else {
+        "normal"
+    }
+}
+
+/// A cor de como um aliado foi achado: verde (ícone reconhecido), âmbar (debaixo de outro ou por eliminação), vermelho (só a última posição), cinza (não achado).
+fn cor_do_achado(c: Option<Como>) -> Color32 {
+    match c {
+        Some(Como::Seen) => DIS_OK,
+        Some(Como::Under) | Some(Como::Inferred) => AMBAR,
+        Some(Como::Held) => DIS_OFF,
+        None => FAINT(),
+    }
+}
+
+/// O tamanho do ícone na tela: abaixo de 14 px a leitura é ruim, a partir de 20 px é boa.
+fn qualidade_do_icone(px: u32) -> (&'static str, Color32) {
+    if px < 14 {
+        ("pequeno", DIS_OFF)
+    } else if px < 20 {
+        ("médio", AMBAR)
+    } else {
+        ("bom", DIS_OK)
+    }
+}
+
+/// O que a pessoa pode fazer agora para o Olheiro enxergar mais, em uma frase; `None` quando está tudo reconhecido.
+fn dica_de_deteccao(est: &Estado, sens: f32) -> (String, Color32) {
+    let l = &est.leitura;
+    let vistos = l.vistos();
+    if l.minimapa_px == 0 || l.esperados == 0 {
+        return ("Lendo o minimapa…".into(), FAINT());
+    }
+    if vistos >= l.esperados {
+        return ("Todos os aliados reconhecidos.".into(), DIS_OK);
+    }
+    if l.icone_px < 20 && l.icone_px >= 14 {
+        return ("Aumente a escala do minimapa nas opções do LoL (Interface › Escala do minimapa): ícones maiores são reconhecidos com mais certeza.".into(), AMBAR);
+    }
+    if vistos * 2 < l.esperados && sens < 0.9 {
+        return ("Poucos aliados reconhecidos. Aumente a sensibilidade aqui embaixo e confira se nada cobre o minimapa.".into(), AMBAR);
+    }
+    ("Alguns aliados ainda não foram reconhecidos; costuma melhorar quando eles saem de perto uns dos outros.".into(), SOFT())
+}
+
+/// O cartão "Detecção": quem o Olheiro está vendo (uma bolinha por aliado), o tamanho do minimapa e a sensibilidade.
+fn deteccao(ui: &mut egui::Ui, j: &mut Janela, est: &Estado, ar: Rect, t: f64) {
+    let p = ui.painter().clone();
+    p.rect_filled(ar, R_MD(), CREAM_2());
+    p.rect_stroke(ar, R_MD(), Stroke::new(1.0_f32, CREAM_4()), StrokeKind::Inside);
+    let x = ar.left() + 12.0;
+    let w = ar.width() - 24.0;
+    let l = &est.leitura;
+    let (vistos, esperados) = (l.vistos(), l.esperados);
+
+    text(&p, Pos2::new(x, ar.top() + 15.0), Align2::LEFT_CENTER, "DETECÇÃO", f8(10.5), SOFT(), 0.6);
+    let (conta, cor_conta) = if esperados == 0 {
+        ("—".to_owned(), FAINT())
+    } else {
+        let r = vistos as f32 / esperados as f32;
+        (format!("{vistos} de {esperados} aliados"), if r >= 0.8 { DIS_OK } else if r >= 0.5 { AMBAR } else { DIS_OFF })
+    };
+    text(&p, Pos2::new(x + w, ar.top() + 15.0), Align2::RIGHT_CENTER, &conta, f7(12.5), cor_conta, 0.0);
+
+    // uma bolinha por aliado do seu time
+    if let Some(pt) = &est.partida {
+        let rosto_l = 28.0_f32;
+        let mut cx = x;
+        for jg in pt.jogadores.iter().filter(|g| g.time == pt.meu_time) {
+            let r = Rect::from_min_size(Pos2::new(cx, ar.top() + 28.0), Vec2::splat(rosto_l));
+            rosto(ui, j, &jg.alias, &jg.campeao, r, t);
+            let c = l.como.get(&jg.chave).copied();
+            p.rect_stroke(r.expand(1.0), R_SM(), Stroke::new(2.0_f32, cor_do_achado(c)), StrokeKind::Outside);
+            if c.is_none() {
+                p.rect_filled(r, R_SM(), CREAM_2().gamma_multiply(0.55));
+            }
+            cx += rosto_l + 8.0;
+        }
+    }
+
+    // o tamanho do minimapa
+    let y3 = ar.top() + 74.0;
+    if l.minimapa_px == 0 {
+        text(&p, Pos2::new(x, y3), Align2::LEFT_CENTER, "Minimapa: lendo…", f6(11.5), FAINT(), 0.0);
+    } else {
+        text(&p, Pos2::new(x, y3), Align2::LEFT_CENTER, &format!("Minimapa {} px · ícones {} px", l.minimapa_px, l.icone_px), f6(11.5), SOFT(), 0.0);
+        let (palavra, cor) = qualidade_do_icone(l.icone_px);
+        text(&p, Pos2::new(x + w, y3), Align2::RIGHT_CENTER, palavra, f7(11.5), cor, 0.0);
+    }
+
+    // o botão de sensibilidade
+    let y4 = ar.top() + 94.0;
+    text(&p, Pos2::new(x, y4), Align2::LEFT_CENTER, "Sensibilidade", f7(12.0), INK(), 0.0);
+    text(&p, Pos2::new(x + w, y4), Align2::RIGHT_CENTER, palavra_sensibilidade(j.rascunho.sensibilidade), f6(11.5), SOFT(), 0.0);
+    let mut v = j.rascunho.sensibilidade;
+    if deslizante(ui, Rect::from_min_size(Pos2::new(x, y4 + 8.0), Vec2::new(w, 20.0)), "sensibilidade-det", &mut v, 1.0) {
+        j.rascunho.sensibilidade = v;
+        j.mandar_ajustes();
+    }
+
+    // a frase do que fazer
+    let lendo = j.det_desde.is_none_or(|d| t - d < DET_ESPERA_S);
+    let (frase, cor) = if lendo { ("Lendo o minimapa…".to_owned(), FAINT()) } else { dica_de_deteccao(est, j.rascunho.sensibilidade) };
+    let mut job = egui::text::LayoutJob::single_section(frase, egui::TextFormat { font_id: f6(11.5), color: cor, line_height: Some(15.0), ..Default::default() });
+    job.wrap.max_width = w;
+    let g = p.layout_job(job);
+    p.galley(Pos2::new(x, ar.top() + 128.0), g, cor);
+}
+
 /// O time (a lista, que rola) e o minimapa embaixo, no lugar dos "group chats" da Steam.
 fn corpo(ui: &mut egui::Ui, j: &mut Janela, est: &Estado, r: Rect, t: f64) {
     let p = ui.painter().clone();
-    let lado = (r.width() - 2.0 * M).min(r.height() * 0.55).max(120.0);
+    let com_cartao = est.fase == Fase::EmPartida;
+    // com o cartão de detecção o mapa cede espaço, para a lista do time não sumir numa janela baixa
+    let reserva = if com_cartao { DET_H + 8.0 } else { 0.0 };
+    let lado = (r.width() - 2.0 * M).min(r.height() * 0.55).min(r.height() - TITULO_H - reserva - 2.0 * M - 80.0).max(110.0);
     let mapa = Rect::from_min_size(Pos2::new(r.center().x - lado / 2.0, r.bottom() - M - lado), Vec2::splat(lado));
     let mut fim_lista = mapa.top() - M;
 
-    // o aviso do que falta, logo acima do mapa
+    // o quanto o Olheiro está enxergando, com o botão de sensibilidade, logo acima do mapa
+    if com_cartao && fim_lista - DET_H >= r.top() + TITULO_H {
+        let ar = Rect::from_min_size(Pos2::new(r.left() + M, fim_lista - DET_H), Vec2::new(r.width() - 2.0 * M, DET_H));
+        deteccao(ui, j, est, ar, t);
+        fim_lista = ar.top() - 8.0;
+    }
+
+    // o aviso do que falta, acima disso
     if let Some((frase, cor)) = problema(est) {
         let fundo = p.add(Shape::Noop);
         let w = r.width() - 2.0 * M;
@@ -604,6 +740,16 @@ fn ajustes(ui: &mut egui::Ui, j: &mut Janela, est: &Estado, r: Rect) {
             }
         }
         y += 22.0 + 34.0 + 18.0;
+
+        rotulo(&p, x, y, "Sensibilidade da detecção");
+        text(&p, Pos2::new(x + w, y + 8.0), Align2::RIGHT_CENTER, palavra_sensibilidade(j.rascunho.sensibilidade), f7(12.0), SOFT(), 0.0);
+        let mut v = j.rascunho.sensibilidade;
+        if deslizante(ui, Rect::from_min_size(Pos2::new(x, y + 20.0), Vec2::new(w, 20.0)), "sensibilidade", &mut v, 1.0) {
+            j.rascunho.sensibilidade = v;
+            j.mandar_ajustes();
+        }
+        text(&p, Pos2::new(x, y + 50.0), Align2::LEFT_CENTER, "Rígida: só aceita o que tem certeza. Sensível: aceita mais, mas pode errar.", f6(11.0), FAINT(), 0.0);
+        y += 52.0 + 14.0;
 
         rotulo(&p, x, y, "Código do grupo");
         if campo(ui, Rect::from_min_size(Pos2::new(x, y + 22.0), Vec2::new(w, 36.0)), "grupo", &mut j.rascunho.codigo_grupo, "nenhum") {

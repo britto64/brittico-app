@@ -22,7 +22,7 @@ pub mod session;
 pub mod som;
 
 pub use ajustes::{Ajustes, Lado};
-pub use motor::{Comando, Estado, Fase, Jogador, Leitura, Motor, Ouvido, Partida};
+pub use motor::{Comando, Como, Estado, Fase, Jogador, Leitura, Motor, Ouvido, Partida};
 pub use olheiro_core::sim::Art;
 pub use olheiro_voz::{CHEIO_ATE, ZERO_EM};
 pub use sala::Conexao;

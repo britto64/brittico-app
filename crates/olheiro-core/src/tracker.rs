@@ -18,7 +18,7 @@ use crate::frame::Frame;
 use crate::geometry::{icon_diam, Rect};
 use crate::identify::identify_icon;
 use crate::rings::{scan_region, Integral};
-use crate::templates::{decide_match, MatchScore, TemplateSet};
+use crate::templates::{decide_match_with, MatchScore, TemplateSet, MATCH_MIN_MARGIN, MATCH_MIN_SCORE};
 use crate::PlayerId;
 use std::collections::{HashMap, HashSet};
 
@@ -99,6 +99,42 @@ pub const HELD_MAX_MS: f64 = 20_000.0;
 /// Recolher leva ao fogo de base (cantos do mapa); um ícone novo ali pode ser de quem quer que tenha acabado de recolher.
 const BASE_ZONE_FRACTION: f64 = 0.2;
 
+/// Os limiares da leitura que a pessoa pode mexer. Um só botão, de 0 (rígido: só aceita o que tem certeza) a 1 (sensível: aceita mais, e erra mais);
+/// 0,5 é o ajuste de fábrica, o mesmo de antes de existir o botão.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tuning {
+    /// Fração mínima de pontos do círculo que têm de ser anel.
+    pub scan_min_hit: f64,
+    /// Nota e margem mínimas para nomear um ícone inteiro.
+    pub match_min_score: f32,
+    pub match_min_margin: f32,
+    /// Idem, para um ícone coberto em parte.
+    pub partial_min_score: f32,
+    pub partial_min_margin: f32,
+}
+
+impl Tuning {
+    pub const DEFAULT_SENSITIVITY: f32 = 0.5;
+
+    pub fn from_sensitivity(s: f32) -> Tuning {
+        let d = (s.clamp(0.0, 1.0) - Self::DEFAULT_SENSITIVITY) as f64;
+        let f = d as f32;
+        Tuning {
+            scan_min_hit: SCAN_MIN_HIT - d * 0.30,
+            match_min_score: MATCH_MIN_SCORE - f * 0.27,
+            match_min_margin: MATCH_MIN_MARGIN - f * 0.18,
+            partial_min_score: PARTIAL_MIN_SCORE - f * 0.18,
+            partial_min_margin: PARTIAL_MIN_MARGIN - f * 0.18,
+        }
+    }
+}
+
+impl Default for Tuning {
+    fn default() -> Self {
+        Tuning::from_sensitivity(Self::DEFAULT_SENSITIVITY)
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Obs {
     x: f64,
@@ -159,6 +195,7 @@ pub struct Scout {
     map_h: f64,
     /// Quantos anéis de aliado o último quadro tinha: a calibração diz "não estou vendo o minimapa" quando é zero por muito tempo.
     rings: usize,
+    tuning: Tuning,
 }
 
 impl Default for Scout {
@@ -184,7 +221,13 @@ impl Scout {
             map_w: 14870.0,
             map_h: 14980.0,
             rings: 0,
+            tuning: Tuning::default(),
         }
+    }
+
+    /// A sensibilidade da detecção, de 0 (rígida) a 1 (sensível). Vale já no próximo quadro.
+    pub fn set_sensitivity(&mut self, s: f32) {
+        self.tuning = Tuning::from_sensitivity(s);
     }
 
     /// Quantos anéis de aliado o último quadro analisado tinha.
@@ -258,7 +301,7 @@ impl Scout {
         let mut spots: Vec<Spot> = Vec::new();
         let integral = Integral::new(mask, w, h);
         let whole = Blob { ring: Ring::Ally, pixels: 0, cx: 0.0, cy: 0.0, min_x: 0, max_x: region.w - 1, min_y: 0, max_y: region.h - 1, fill: 0.1 };
-        let (found, ring_diam) = scan_region(mask, w, h, &whole, diam, MAX_SCANNED_RINGS, SCAN_MIN_HIT, &integral);
+        let (found, ring_diam) = scan_region(mask, w, h, &whole, diam, MAX_SCANNED_RINGS, self.tuning.scan_min_hit, &integral);
         let mut rings = 0;
         for f in &found {
             if f.visible >= FULL_RING_VISIBLE {
@@ -318,7 +361,7 @@ impl Scout {
             if q.need && budget > 0 && !self.sets.is_empty() {
                 budget -= 1;
                 let ranked = identify_icon(frame, region.x as f64 + sp.x, region.y as f64 + sp.y, ring_diam, &self.sets);
-                o.id = if sp.partial { decide_partial(&ranked) } else { decide_match(&ranked) };
+                o.id = if sp.partial { decide_partial(&ranked, &self.tuning) } else { decide_match_with(&ranked, self.tuning.match_min_score, self.tuning.match_min_margin) };
                 o.scores = Some(ranked);
             }
             // Um ícone que o filtro recusou por cheio demais (arte na cor do anel, ou minions) só vale se foi reconhecido.
@@ -682,8 +725,31 @@ impl Scout {
 }
 
 /// A decisão para um ícone coberto em parte: nota alta e uma margem clara sobre o segundo.
-fn decide_partial(ranked: &[MatchScore]) -> Option<usize> {
+fn decide_partial(ranked: &[MatchScore], t: &Tuning) -> Option<usize> {
     let first = ranked.first()?;
     let second = ranked.get(1).map_or(0.0, |m| m.score);
-    (first.score >= PARTIAL_MIN_SCORE && first.score - second >= PARTIAL_MIN_MARGIN).then_some(first.id)
+    (first.score >= t.partial_min_score && first.score - second >= t.partial_min_margin).then_some(first.id)
+}
+
+#[cfg(test)]
+mod tuning_tests {
+    use super::*;
+
+    #[test]
+    fn a_sensibilidade_de_fabrica_e_a_de_sempre() {
+        let t = Tuning::default();
+        assert!((t.scan_min_hit - SCAN_MIN_HIT).abs() < 1e-9);
+        assert_eq!((t.match_min_score, t.match_min_margin), (MATCH_MIN_SCORE, MATCH_MIN_MARGIN));
+        assert_eq!((t.partial_min_score, t.partial_min_margin), (PARTIAL_MIN_SCORE, PARTIAL_MIN_MARGIN));
+    }
+
+    #[test]
+    fn mais_sensivel_exige_menos_e_fora_da_faixa_nao_estoura() {
+        let (rigida, normal, sensivel) = (Tuning::from_sensitivity(0.0), Tuning::default(), Tuning::from_sensitivity(1.0));
+        assert!(rigida.scan_min_hit > normal.scan_min_hit && normal.scan_min_hit > sensivel.scan_min_hit);
+        assert!(rigida.match_min_score > normal.match_min_score && normal.match_min_score > sensivel.match_min_score);
+        assert!(rigida.match_min_margin > sensivel.match_min_margin && sensivel.match_min_margin > 0.0);
+        assert_eq!(Tuning::from_sensitivity(9.0), sensivel);
+        assert_eq!(Tuning::from_sensitivity(-3.0), rigida);
+    }
 }

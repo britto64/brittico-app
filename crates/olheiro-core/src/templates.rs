@@ -248,12 +248,17 @@ pub struct MatchScore {
 
 /// Quem é, se a comparação for clara; `None` se não.
 pub fn decide_match(ranked: &[MatchScore]) -> Option<usize> {
+    decide_match_with(ranked, MATCH_MIN_SCORE, MATCH_MIN_MARGIN)
+}
+
+/// Como [`decide_match`], com a nota mínima e a margem escolhidas (a sensibilidade da detecção).
+pub fn decide_match_with(ranked: &[MatchScore], min_score: f32, min_margin: f32) -> Option<usize> {
     let first = ranked.first()?;
-    if first.score < MATCH_MIN_SCORE {
+    if first.score < min_score {
         return None;
     }
     let second = ranked.get(1).map_or(0.0, |m| m.score);
-    (first.score - second >= MATCH_MIN_MARGIN).then_some(first.id)
+    (first.score - second >= min_margin).then_some(first.id)
 }
 
 #[cfg(test)]

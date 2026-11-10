@@ -21,7 +21,7 @@ pub mod tracker;
 
 pub use frame::Frame;
 pub use geometry::{MapKind, MinimapSide, Rect};
-pub use tracker::{How, Placement, Scout, ScoutPlayer};
+pub use tracker::{How, Placement, Scout, ScoutPlayer, Tuning};
 
 /// Um jogador do elenco, pelo número dele no elenco da partida (a ordem em que o jogo os lista).
 pub type PlayerId = usize;
