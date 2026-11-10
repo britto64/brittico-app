@@ -3,6 +3,10 @@
 //! Vale a leitura mais fresca. Empate no instante: ganha a de maior confiança. Leitura com mais de 5 s,
 //! ou com relógio adiantado demais, é ignorada. Sem posição fresca dos dois lados, o volume fica em 1.
 //!
+//! Uma leitura MUITO menos confiável não toma o lugar de uma boa e recente: cada olheiro manda os cinco aliados a cada quadro,
+//! inclusive os que ele não está vendo (a última posição, "retida", com confiança baixa). Sem esta regra, a "retida" de um colega
+//! que perdeu o ícone de vista apagava, quadro a quadro, a posição certa que outro colega acabava de ler.
+//!
 //! Um campeão não some de um canto do mapa e aparece no outro: uma leitura que exigiria correr (e dar Flash) mais do que
 //! dá no tempo que passou fica em QUARENTENA e não mexe na posição. Ela só vale se uma leitura seguinte (de qualquer olheiro)
 //! cair no mesmo lugar, que é o que um teleporte, um recall ou um respawn fazem; um nome errado de um quadro só não se repete.
@@ -22,6 +26,9 @@ const VELOCIDADE: f64 = 0.8;
 const FOLGA: f64 = 1_800.0;
 /// Uma leitura em quarentena é confirmada por outra a menos disto dela (dois ícones do mesmo campeão no minimapa).
 const CONFIRMA_RAIO: f64 = 900.0;
+/// Uma leitura com confiança tão menor que a guardada não a substitui enquanto a guardada for tão recente.
+const MENOS_CONFIANCA: f64 = 0.25;
+const RECENTE_MS: u64 = 1_500;
 /// A quarentena vale por este tempo; passou, a leitura esquecida.
 const QUARENTENA_MS: u64 = 3_000;
 
@@ -65,6 +72,7 @@ impl Fusao {
         }
         let fica = match self.por.get(&ponto.k) {
             Some(velha) if t_ms < velha.t || (t_ms == velha.t && ponto.c <= velha.ponto.c) => false,
+            Some(velha) if ponto.c + MENOS_CONFIANCA <= velha.ponto.c && t_ms - velha.t <= RECENTE_MS => false,
             _ => true,
         };
         if fica {
@@ -156,8 +164,8 @@ mod tests {
     fn a_leitura_mais_fresca_vence_mesmo_com_menos_confianca() {
         let mut f = Fusao::nova();
         f.observar(1_000, p("Ana#BR1", 0.0, 0.0, 0.99), 1_000);
-        f.observar(2_000, p("ana#br1", 100.0, 0.0, 0.2), 2_000);
-        assert_eq!(f.posicao(2_000, "ANA#br1"), Some((100.0, 0.0)));
+        f.observar(1_100, p("ana#br1", 20.0, 0.0, 0.9), 1_100);
+        assert_eq!(f.posicao(1_100, "ANA#br1"), Some((20.0, 0.0)));
     }
 
     #[test]
@@ -282,5 +290,26 @@ mod tests {
         r.s = "held".into();
         f.observar(1_400, r, 1_400);
         assert_eq!(f.posicao(1_400, "ana#br1"), Some((2_000.0, 2_000.0)));
+    }
+
+    #[test]
+    fn a_retida_de_um_colega_nao_apaga_a_leitura_boa_e_recente_de_outro() {
+        let mut f = Fusao::nova();
+        f.observar(1_000, p("ana#br1", 3_000.0, 3_000.0, 0.9), 1_000);
+        let mut r = p("ana#br1", 2_900.0, 3_000.0, 0.3);
+        r.s = "held".into();
+        f.observar(1_200, r.clone(), 1_200);
+        assert_eq!(f.posicao(1_200, "ana#br1"), Some((3_000.0, 3_000.0)), "a boa e recente fica");
+        // se a boa envelhece, a retida passa a ser melhor que nada
+        f.observar(3_000, r, 3_000);
+        assert_eq!(f.posicao(3_000, "ana#br1"), Some((2_900.0, 3_000.0)));
+    }
+
+    #[test]
+    fn leitura_pouco_pior_ainda_vale_se_for_mais_fresca() {
+        let mut f = Fusao::nova();
+        f.observar(1_000, p("ana#br1", 0.0, 0.0, 0.9), 1_000);
+        f.observar(1_100, p("ana#br1", 40.0, 0.0, 0.7), 1_100);
+        assert_eq!(f.posicao(1_100, "ana#br1"), Some((40.0, 0.0)));
     }
 }
