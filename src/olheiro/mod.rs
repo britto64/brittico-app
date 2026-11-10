@@ -4,6 +4,8 @@
 //! Abrir a janela já liga o Olheiro. Texto só para o que não está funcionando, dizendo o que fazer. Não tem ligação com a
 //! Call nem com a conta: quem trabalha é o `olheiro-motor`.
 
+pub mod overlay;
+
 use crate::perfil::ajustes::{self as aj, Btn};
 use crate::theme::*;
 use crate::ui::{self, mix, text};
@@ -50,6 +52,8 @@ pub struct Janela {
     pub principal_oculta: bool,
     /// Desde quando (relógio do egui) a partida está sendo lida: o aviso de detecção espera o jogo desenhar os ícones.
     det_desde: Option<f64>,
+    /// Onde o overlay foi posto por último (para acompanhar a janela do jogo se ela mudar de lugar).
+    overlay_pos: Option<Pos2>,
 }
 
 pub type JanelaRef = Arc<Mutex<Janela>>;
@@ -64,7 +68,7 @@ impl Janela {
             }
         });
         let rascunho = motor.estado().ajustes;
-        let mut j = Janela { motor, aberta: false, aberta_flag: aberta, ajustes: false, rascunho, visto: None, texturas: HashMap::new(), procurado: HashMap::new(), lista: None, expandido: None, principal_oculta: false, det_desde: None };
+        let mut j = Janela { motor, aberta: false, aberta_flag: aberta, ajustes: false, rascunho, visto: None, texturas: HashMap::new(), procurado: HashMap::new(), lista: None, expandido: None, principal_oculta: false, det_desde: None, overlay_pos: None };
         // BRITTICO_OLHEIRO=abrir | ajustes | simulada[N]: abre a janela já num estado, para testar e capturar
         // (N = qual aliado você é na partida simulada, 1 a 5; duas cópias com N diferentes caem na mesma sala de voz)
         if let Ok(v) = std::env::var("BRITTICO_OLHEIRO") {
@@ -756,6 +760,15 @@ fn ajustes(ui: &mut egui::Ui, j: &mut Janela, est: &Estado, r: Rect) {
             j.mandar_ajustes();
         }
         y += 22.0 + 36.0 + 18.0;
+
+        let ov_r = Rect::from_min_size(Pos2::new(x, y), Vec2::new(w, 32.0));
+        if ui.interact(ov_r, ui.id().with("ol-overlay"), Sense::click()).on_hover_cursor(CursorIcon::PointingHand).clicked() {
+            j.rascunho.overlay = !j.rascunho.overlay;
+            j.mandar_ajustes();
+        }
+        text(&p, Pos2::new(x, y + 16.0), Align2::LEFT_CENTER, "Mostrar quem fala no jogo", f7(13.0), INK(), 0.0);
+        aj::switch(ui, Rect::from_min_size(Pos2::new(x + w - 44.0, y + 4.0), Vec2::new(44.0, 24.0)), "ol-overlay", j.rascunho.overlay);
+        y += 32.0 + 6.0;
 
         let linha_r = Rect::from_min_size(Pos2::new(x, y), Vec2::new(w, 32.0));
         if ui.interact(linha_r, ui.id().with("ol-pacote"), Sense::click()).on_hover_cursor(CursorIcon::PointingHand).clicked() {

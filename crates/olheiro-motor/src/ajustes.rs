@@ -68,6 +68,8 @@ pub struct Ajustes {
     pub pasta_lol: Option<String>,
     /// De 0 (rígida: só aceita o que tem certeza) a 1 (sensível: aceita mais, e erra mais). 0,65 é o ajuste de fábrica.
     pub sensibilidade: f32,
+    /// Mostrar, por cima do jogo, quem está falando perto de você (como o overlay do Discord).
+    pub overlay: bool,
 }
 
 impl Default for Ajustes {
@@ -87,6 +89,7 @@ impl Default for Ajustes {
             apresentado: false,
             pasta_lol: None,
             sensibilidade: 0.65,
+            overlay: true,
         }
     }
 }

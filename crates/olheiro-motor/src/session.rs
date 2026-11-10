@@ -102,6 +102,8 @@ struct Game {
     no_rings_since: Option<f64>,
     /// Como cada aliado vivo foi achado no último quadro (só os que o olheiro soube dizer).
     how: Vec<(String, How)>,
+    /// Onde a janela do jogo estava no último quadro (área do cliente, em pixels da tela).
+    win: Option<Rect>,
     dead: Vec<String>,
     /// O pacote de depuração desta partida (só com `Settings.debug`).
     bundle: Option<crate::debug::Bundle>,
@@ -141,6 +143,14 @@ impl<L: Lol, C: Capture, I: Icons, O: Out> Runner<L, C, I, O> {
         self.cfg.sensitivity = s;
         if let Mode::InGame(g) = &mut self.mode {
             g.scout.set_sensitivity(s);
+        }
+    }
+
+    /// A janela do jogo no último quadro lido (`None` fora de partida ou com o jogo minimizado).
+    pub fn janela(&self) -> Option<Rect> {
+        match &self.mode {
+            Mode::InGame(g) => g.win,
+            Mode::Idle => None,
         }
     }
 
@@ -285,6 +295,7 @@ impl<L: Lol, C: Capture, I: Icons, O: Out> Runner<L, C, I, O> {
             t0: now_ms,
             no_rings_since: None,
             how: Vec::new(),
+            win: None,
             dead: Vec::new(),
             bundle: None,
             meta_written: false,
@@ -340,7 +351,9 @@ impl<L: Lol, C: Capture, I: Icons, O: Out> Runner<L, C, I, O> {
         g.last_frame = now_ms;
 
         let riot = Some(g.you_key.clone());
-        let Some(win) = self.cap.window() else {
+        let win = self.cap.window();
+        g.win = win;
+        let Some(win) = win else {
             let c = Self::problem(false, "Não achei a janela do LoL. Jogue em modo Janela sem borda (não em tela cheia) e deixe o jogo visível.", 0, 0.0);
             self.status(Phase::Ingame, riot, Some(c));
             return;

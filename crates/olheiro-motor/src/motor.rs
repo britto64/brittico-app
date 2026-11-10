@@ -58,6 +58,8 @@ pub struct Leitura {
     pub como: BTreeMap<String, Como>,
     /// Quantos aliados vivos (você incluído) o Olheiro deveria achar agora.
     pub esperados: usize,
+    /// A janela do jogo na tela `(x, y, largura, altura)`, em pixels: onde o overlay se encaixa.
+    pub janela: Option<(i32, i32, i32, i32)>,
 }
 
 pub use olheiro_core::How as Como;
@@ -251,6 +253,13 @@ impl Fonte {
             Fonte::Lol(r) => r.aliados(),
             Fonte::Simulada(r) => r.aliados(),
         }
+    }
+    fn janela(&self) -> Option<(i32, i32, i32, i32)> {
+        let r = match self {
+            Fonte::Lol(r) => r.janela(),
+            Fonte::Simulada(r) => r.janela(),
+        }?;
+        Some((r.x, r.y, r.w, r.h))
     }
     fn deteccao(&self) -> (Vec<(String, Como)>, usize) {
         match self {
@@ -465,6 +474,7 @@ impl Laco {
             let (como, esperados) = f.deteccao();
             self.est.leitura.como = como.into_iter().collect();
             self.est.leitura.esperados = esperados;
+            self.est.leitura.janela = f.janela();
         }
         let recados: Vec<ToBot> = self.fila.0.borrow_mut().drain(..).collect();
         for r in recados {

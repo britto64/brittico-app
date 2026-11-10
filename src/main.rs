@@ -316,6 +316,11 @@ impl App {
 }
 
 impl eframe::App for App {
+    /// O fundo atrás de tudo é transparente: só o overlay do Olheiro é uma janela transparente, e as demais telas pintam o próprio fundo.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0, 0.0, 0.0, 0.0]
+    }
+
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         // a roda do mouse: mais rápida que o padrão do egui (40 px por clique) e com aceleração, como num navegador:
         // cliques seguidos em menos de 0,2 s vão somando velocidade (até 4×); parou, volta ao normal
@@ -421,6 +426,7 @@ impl eframe::App for App {
         });
         self.conta.mostrar(ctx);
         self.janela_do_olheiro(ctx);
+        olheiro::overlay::hospedar(ctx, &self.olheiro);
         // quem fala muda a cada ~0,4 s: só vale redesenhar sozinho quando a Call está na tela
         if self.section == Section::Call {
             ctx.request_repaint_after(Duration::from_millis(100));
