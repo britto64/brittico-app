@@ -551,10 +551,11 @@ impl Laco {
                 self.est.riot_id = Some(you);
                 self.est.partida = Some(Partida { id: game_id, personalizada: custom, meu_time, voce, jogadores });
             }
-            ToBot::Frame { pos, .. } => {
+            ToBot::Frame { pos, dead, .. } => {
                 let agora = crate::agora_ms();
                 let pontos: Vec<Ponto> = pos.into_iter().map(|p| Ponto { k: p.k, x: p.x, y: p.y, c: p.c, s: p.s }).collect();
                 if let Ok(mut f) = self.comum.fusao.lock() {
+                    f.mortos(dead);
                     for p in &pontos {
                         f.observar(agora, p.clone(), agora);
                     }
