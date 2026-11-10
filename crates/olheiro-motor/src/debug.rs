@@ -1,6 +1,6 @@
 //! O pacote de depuração: quadros reais do minimapa, para eu ajustar a leitura sem ter o jogo aqui.
 //!
-//! Desligado por padrão e só a pedido da pessoa. Durante uma partida grava, a cada 2 s e por no máximo 4 minutos, o quadro capturado
+//! Desligado por padrão e só a pedido da pessoa. Durante uma partida grava, a cada 2 s e por no máximo 20 minutos, o quadro capturado
 //! (um quadrado em volta do minimapa, sem o resto da tela) e o que o Olheiro achou nele, e guarda os ícones usados. A pasta fica no
 //! computador; a pessoa a compacta e manda a quem for ajudar. Nada sai sozinho. Os quadros podem incluir o nome dos aliados.
 
@@ -11,9 +11,9 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// De quanto em quanto tempo um quadro é guardado, e quantos no máximo (4 minutos).
+/// De quanto em quanto tempo um quadro é guardado, e quantos no máximo (20 minutos).
 pub const EVERY_MS: f64 = 2000.0;
-pub const MAX_FRAMES: usize = 120;
+pub const MAX_FRAMES: usize = 600;
 
 pub struct Meta {
     pub version: String,

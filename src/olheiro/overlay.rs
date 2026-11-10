@@ -78,9 +78,10 @@ pub fn quem(est: &Estado, nivel: &HashMap<String, f32>, mic: f32, t: f64) -> Vec
             out.push(Item { alias: jg.alias.clone(), nome: jg.campeao.clone(), falando, alpha: base * (0.45 + 0.55 * o.proximidade.clamp(0.0, 1.0)) });
         } else if jg.time == pt.meu_time {
             // fora do Brittico (um bot, um amigo sem o app): aparece pela distância no mapa, sempre calado
+            // sem a posição de um dos dois não há como saber se está perto: some (a voz, que "nunca silencia", é outra conta)
             let prox = match (est.posicoes.get(&pt.voce), est.posicoes.get(&jg.chave)) {
                 (Some(a), Some(b)) => proximidade(((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()),
-                _ => 1.0,
+                _ => continue,
             };
             if prox < AUDIVEL {
                 continue;
